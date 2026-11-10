@@ -1363,5 +1363,91 @@
     "description": "日程活动影响心情的强度",
     "hint": "每小时按日程类别（上班/吃饭/休息/逛街/通勤）给真实心情加/减一点，0=关掉；默认 3，越大越明显。",
     "default": 3.0
+  },
+  "schedule_day_types": {
+    "description": "日子类型：每天先按权重抽一种，再按类型生成日程",
+    "type": "list",
+    "default": [
+      {
+        "id": "workday",
+        "name": "上班日",
+        "enabled": true,
+        "weight": 5,
+        "scope": "weekday",
+        "guide": "常规上班日，两点一线：起床、通勤、上班、下班回家、睡觉。"
+      },
+      {
+        "id": "restday",
+        "name": "休息日",
+        "enabled": true,
+        "weight": 4,
+        "scope": "weekend",
+        "guide": "不上班，以待在家里为主：睡懒觉、收拾、散步、出去吃一顿。"
+      },
+      {
+        "id": "outing",
+        "name": "外出日",
+        "enabled": true,
+        "weight": 3,
+        "scope": "weekend",
+        "guide": "出门玩一整天：逛街、看展、去公园或海边，傍晚或晚上才回家。"
+      },
+      {
+        "id": "homebody",
+        "name": "宅家日",
+        "enabled": true,
+        "weight": 1,
+        "scope": "any",
+        "guide": "哪儿也不去，窝在家：睡到中午、点外卖、看剧看书。"
+      },
+      {
+        "id": "overtime",
+        "name": "加班日",
+        "enabled": true,
+        "weight": 1,
+        "scope": "weekday",
+        "guide": "活多的一天：一直忙到很晚，回家倒头就睡。"
+      },
+      {
+        "id": "slacking",
+        "name": "摸鱼日",
+        "enabled": true,
+        "weight": 1,
+        "scope": "weekday",
+        "guide": "名义上在上班，实际上一直找机会摸鱼。"
+      }
+    ],
+    "items": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "唯一标识",
+          "type": "string"
+        },
+        "name": {
+          "description": "类型名",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "是否启用",
+          "type": "bool",
+          "default": true
+        },
+        "weight": {
+          "description": "抽取权重",
+          "type": "float",
+          "default": 1
+        },
+        "scope": {
+          "description": "适用：weekday / weekend / any",
+          "type": "string",
+          "default": "any"
+        },
+        "guide": {
+          "description": "给模型的指引",
+          "type": "string"
+        }
+      }
+    }
   }
 }

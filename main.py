@@ -50,6 +50,24 @@ except Exception:
     Comp = None
 
 from astrbot.api import logger
+
+try:
+    from .day_types import normalize_day_types, pick_day_type
+except Exception:
+    try:
+        from day_types import normalize_day_types, pick_day_type
+    except Exception:
+        normalize_day_types = None
+        pick_day_type = None
+
+try:
+    from .schedule_change import apply_change as apply_sched_change, detect_schedule_change
+except Exception:
+    try:
+        from schedule_change import apply_change as apply_sched_change, detect_schedule_change
+    except Exception:
+        detect_schedule_change = None
+        apply_sched_change = None
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 
@@ -3230,6 +3248,58 @@ class HumanState:
             })
         return items
 
+    def _day_types(self) -> list:
+        """读配置里的日子类型；没配就用默认那六种。"""
+        if normalize_day_types is None:
+            return []
+        raw = []
+        try:
+            raw = self.p.cfg_list("schedule_day_types", [])
+        except Exception:
+            raw = []
+        return normalize_day_types(raw or None)
+
+    def _today_day_type(self, day: str) -> dict:
+        """今天是什么日子：上班日 / 休息日 / 外出日 / 宅家日 / 加班日 / 摸鱼日。"""
+        if pick_day_type is None:
+            return {"id": "workday", "name": "上班日", "guide": ""}
+        try:
+            import datetime as _dt
+
+            d = _dt.date.fromisoformat(str(day))
+            is_weekend = d.weekday() >= 5
+            picked = pick_day_type(self._day_types(), is_weekend, str(day))
+            self.db.kv_set("day_type_" + str(day), picked)
+            logger.debug("[amo] 今天的日子类型: %s" % picked.get("name"))
+            return picked
+        except Exception as exc:
+            logger.debug("[amo] 日子类型抽取失败: %s" % exc)
+            return {"id": "workday", "name": "上班日", "guide": ""}
+
+    async def _apply_user_schedule_change(self, umo, user_text: str) -> None:
+        """用户明确安排了行程（来接我 / 一起睡 / 出去吃），把那一段日程改掉。"""
+        if detect_schedule_change is None or apply_sched_change is None:
+            return
+        try:
+            change = detect_schedule_change(user_text)
+            if not change:
+                return
+            import datetime as _dt
+
+            key = _dt.date.today().isoformat()
+            items = self.state.schedule.get(key) or self.db.get_schedule(key) or []
+            if not items:
+                return
+            new_items = apply_sched_change(items, change, _dt.datetime.now())
+            if new_items == items:
+                return
+            self.state.schedule[key] = new_items
+            self.db.kv_set("schedule", self.state.schedule)
+            self.db.save_schedule(key, new_items)
+            logger.info("[amo] 按用户的话改了日程: %s" % change.get("activity"))
+        except Exception as exc:
+            logger.debug("[amo] 按话改日程失败: %s" % exc)
+
     async def ensure_schedule(self, umo, force=False):
         """每天只生成一次主干；点击二级卡片时再动态生成这一小时的日记。"""
         today = today_str()
@@ -3241,6 +3311,7 @@ class HumanState:
             and isinstance(context, dict)
             and context.get("version") == "backbone-v5"
         )
+        day_type = self._today_day_type(today)
         if existing and version_ok and not force:
             hourly = self._hourly_schedule(existing)
             if hourly != existing:
@@ -3276,6 +3347,7 @@ class HumanState:
                     persona=persona, salt=str(now_ts()) if force else "",
                 )
                 self.schedule_profile = context.get("profile") or self.schedule_profile
+                context["day_type"] = day_type
                 items = self.engine.build_skeleton(context)
                 try:
                     items = await self.engine.enrich(umo, context, items, self.p.llm)
@@ -8574,6 +8646,12 @@ class HumanCorePlugin(Star):
     async def on_message(self, event: AstrMessageEvent):
         try:
             await self._ensure_ready()
+            try:
+                raw_text = (event.message_str or "").strip()
+                if raw_text and not raw_text.startswith(("/", "／")):
+                    await self._apply_user_schedule_change(event.unified_msg_origin, raw_text)
+            except Exception:
+                pass
             await self._handle_message(event)
         except Exception:
             logger.exception("[amo] 消息处理异常")
@@ -9930,6 +10008,90 @@ class HumanCorePlugin(Star):
             await self.heartflow.on_after_message_sent(event)
         except Exception as exc:
             logger.debug("[amo] 心流发送后状态更新失败: %s" % exc)
+
+    @filter.llm_tool(name="schedule_view")
+    async def schedule_view(self, event, day: str = "today") -> str:
+        """回想自己某一天打算做什么、做过什么。想不起今天或明天的安排时用。
+
+        Args:
+            day(string): today / tomorrow / yesterday，默认今天。
+        """
+        try:
+            import datetime as _dt
+
+            which = str(day or "today").strip().lower()
+            today = _dt.date.today()
+            if which == "tomorrow":
+                target = today + _dt.timedelta(days=1)
+            elif which == "yesterday":
+                target = today - _dt.timedelta(days=1)
+            else:
+                target = today
+            key = target.isoformat()
+            items = self.state.schedule.get(key) or self.db.get_schedule(key) or []
+            if not items:
+                return "那天还没有安排。"
+            dt_info = self.db.kv_get("day_type_" + key, None) or {}
+            lines = []
+            if isinstance(dt_info, dict) and dt_info.get("name"):
+                lines.append("今天是%s。" % dt_info["name"])
+            for it in items:
+                start = str(it.get("start") or "")
+                end = str(it.get("end") or "")
+                act = str(it.get("activity") or "").strip()
+                place = str(it.get("place") or "").strip()
+                if not act:
+                    continue
+                lines.append("%s-%s %s%s" % (
+                    start, end, act, ("（%s）" % place) if place else ""))
+            return "\n".join(lines[:24]) or "那天还没有安排。"
+        except Exception as exc:
+            logger.debug("[amo] schedule_view 失败: %s" % exc)
+            return "想不起来…"
+
+    @filter.llm_tool(name="schedule_edit")
+    async def schedule_edit(self, event, time: str, activity: str, place: str = "") -> str:
+        """改自己今天某一段时间在做什么。比如想提前回家、临时出门一趟。
+
+        Args:
+            time(string): 要改的那个时间点，例如「15:00」。
+            activity(string): 改成做什么，一句话。
+            place(string): 地点，留空就沿用原来的。
+        """
+        try:
+            import datetime as _dt
+
+            key = _dt.date.today().isoformat()
+            items = self.state.schedule.get(key) or self.db.get_schedule(key) or []
+            if not items:
+                return "今天还没有日程，改不了。"
+            want = str(time or "").strip()
+            hit = None
+            for it in items:
+                if str(it.get("start") or "") == want[:5]:
+                    hit = it
+                    break
+            if hit is None:
+                for it in items:
+                    s0 = str(it.get("start") or "")
+                    e0 = str(it.get("end") or "")
+                    if s0 and e0 and s0 <= want[:5] < e0:
+                        hit = it
+                        break
+            if hit is None:
+                return "那个时间点找不到对应的安排。"
+            hit["activity"] = str(activity or "").strip()[:60] or hit.get("activity")
+            if str(place or "").strip():
+                hit["place"] = str(place).strip()[:30]
+            self.state.schedule[key] = items
+            self.db.kv_set("schedule", self.state.schedule)
+            self.db.save_schedule(key, items)
+            logger.info("[amo] 日程已改: %s -> %s" % (hit.get("start"), hit.get("activity")))
+            return "改好了，%s 那会儿我就在%s。" % (
+                hit.get("start"), str(hit.get("activity") or "")[:20])
+        except Exception as exc:
+            logger.debug("[amo] schedule_edit 失败: %s" % exc)
+            return "没改成…"
 
     @filter.on_decorating_result()
     async def on_decorating_result(self, event: AstrMessageEvent):

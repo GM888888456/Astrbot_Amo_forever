@@ -824,10 +824,45 @@ class ScheduleEngine:
     # ------------------------------------------------------------------
     # 2. 主干骨架
     # ------------------------------------------------------------------
+    def _day_type_guide(self, ctx) -> str:
+        dt = (ctx or {}).get("day_type") or {}
+        name = str(dt.get("name") or "").strip()
+        guide = str(dt.get("guide") or "").strip()
+        if not name:
+            return ""
+        return "【今天是%s】%s\n" % (name, guide)
+
+    def _outing_segments(self, ctx):
+        """外出日骨架：早上出门，白天在外面玩，傍晚回家。"""
+        ctx = dict(ctx or {})
+        home = ctx.get("home") or "家"
+        city = ctx.get("city") or "城里"
+        spot = ctx.get("scenic") or {}
+        where = str(spot.get("name") or "").strip() or ("%s的街上" % city)
+        return [
+            self._seg(8 * 60, 9 * 60 + 30, "起床收拾，翻衣柜挑今天要穿的衣服", home, "home", "life"),
+            self._seg(9 * 60 + 30, 10 * 60 + 30, "出门，坐车去%s" % where, "路上", "city", "commute",
+                      transit="在路上", vehicle="地铁"),
+            self._seg(10 * 60 + 30, 12 * 60, "在%s慢慢逛" % where, where, "city", "play"),
+            self._seg(12 * 60, 13 * 60 + 30, "找了家小店吃饭", "%s附近" % where, "city", "meal"),
+            self._seg(13 * 60 + 30, 16 * 60, "接着逛，走走停停", where, "city", "play"),
+            self._seg(16 * 60, 17 * 60, "找个地方坐下歇一会儿，喝点东西", where, "city", "rest"),
+            self._seg(17 * 60, 18 * 60 + 30, "往回走，路上有点累", "路上", "city", "commute",
+                      transit="在路上", vehicle="地铁"),
+            self._seg(18 * 60 + 30, 20 * 60, "到家附近吃晚饭", home, "home", "meal"),
+            self._seg(20 * 60, 22 * 60 + 30, "洗完澡窝在沙发上，翻今天拍的照片", home, "home", "rest"),
+            self._seg(22 * 60 + 30, 24 * 60, "睡觉", home, "home", "sleep"),
+        ]
+
     def build_skeleton(self, ctx):
         event_kind = (ctx.get("event") or {}).get("kind")
+        day_id = str(((ctx or {}).get("day_type") or {}).get("id") or "")
         if event_kind == "business_trip" and not (ctx.get("meta") or {}).get("rest"):
             segments = self._business_trip_segments(ctx)
+        elif day_id == "outing":
+            segments = self._outing_segments(ctx)
+        elif day_id == "homebody":
+            segments = self._rest_segments(ctx)
         elif (ctx.get("meta") or {}).get("rest"):
             segments = self._rest_segments(ctx)
         else:
