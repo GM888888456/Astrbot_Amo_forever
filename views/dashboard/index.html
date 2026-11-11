@@ -390,10 +390,7 @@
       .tabs .tab { padding: 0 2px; font-size: 12px; }
       .clock { font-size: 11px; }
     }
-    /* 状态 / 礼物 / 关系 已搬进「双击照片」面板，这里只藏顶栏入口，逻辑不动 */
-  #btnNeuron, #btnGiftIcon, #btnStatusIcon { display: none; }
-  .sheet-nav { flex-wrap: wrap; row-gap: 6px; overflow: visible; }
-</style>
+  </style>
 </head>
 <body>
   <div class="wrap">
@@ -2135,9 +2132,6 @@
       { label: "日记", sheet: "diary" },
       { label: "分段", sheet: "settings", group: "分段" },
       { label: "记忆", sheet: "settings", group: "记忆" },
-  { label: "状态", sheet: "status" },
-  { label: "礼物", sheet: "gift" },
-  { label: "关系", sheet: "relations" },
     ];
     let sheetNavButtons = [];
     let sheetReturnTab = "world";
@@ -2179,12 +2173,7 @@
         button.textContent = item.label;
         button.dataset.sheet = item.sheet;
         if (item.group) button.dataset.group = item.group;
-        button.addEventListener("click", () => {
-            showSheetPanel(item.sheet, item.group, button);
-            // 这几个面板原来是 showTab 顺手加载的，现在由 sheet 自己触发
-            if (item.sheet === "gift") loadGift();
-            if (item.sheet === "relations") openNeuron();
-          });
+        button.addEventListener("click", () => showSheetPanel(item.sheet, item.group, button));
         sheetNav.appendChild(button);
         return button;
       });
@@ -2250,13 +2239,6 @@
     if (sheetBody) {
       const diaryPanel = document.getElementById("tab-diary");
       if (diaryPanel) sheetBody.appendChild(diaryPanel);
-      // 顶栏的状态 / 礼物 / 关系也搬进同一个面板：入口从顶栏换到这里，内部逻辑不动
-      if (sheetBody) {
-        ["tab-status", "tab-gift", "tab-relations"].forEach((id) => {
-          const panel = document.getElementById(id);
-          if (panel) sheetBody.appendChild(panel);
-        });
-      }
     }
     const sheetCloseButton = document.getElementById("sheetClose");
     if (sheetCloseButton) sheetCloseButton.addEventListener("click", closeSheet);
