@@ -1,5 +1,19 @@
 # Changelog
 
+## 7.4.7（群聊不进私聊记忆 · 自拍就绪 · 面板收拢）
+
+- **PR #42（彩虹UPUP）已合**：`_selfie_ready()` 适配新版万象画卷——除了老的
+  `persona_ref_image` / `persona_base_prompt`，还认 `plugin_config.personas[*].ref_images`
+  和 JSON 形式的 `persona_config`，最后用我们自己的三视图兜底；不再把「有形象」误判成
+  「没有形象」而把自拍静默降级成街景；
+- **PR #43 的思路移植到 7.4.6 主线**（原分支停在 6.13.5，直接合并会冲突）：里程碑归档 /
+  每日总结 / 日记这三处「按人归纳」的取数都过一遍 `memory_scope.private_rows()`，
+  群会话（umo 含 `GroupMessage`）的行直接剔掉，不再把群友的话压成 `scope='private'` 的记忆；
+  群聊自己的记忆仍按 `scope='group'` 正常写；
+- 新增 `memory_scope.py`（纯函数）+ `tests/test_memory_scope.py`；
+- 面板：顶栏的「状态 / 礼物 / 关系」三个图标入口收进「双击照片」打开的二级面板，
+  和日记 / 分段 / 记忆排在同一行，主页面顶部不再占位；各页加载与交互不变。
+
 ## 7.4.6（清理诊断代码）
 
 - 移除相框排查期的临时诊断：`PANEL_BUILD` 版本标记、`/photo/ack` 回报接口、`/photo/job` 轮询日志；
