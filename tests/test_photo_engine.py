@@ -319,6 +319,73 @@ class PhotoTests(unittest.TestCase):
         self.assertGreaterEqual(len(omni.calls), 1)
         self.assertEqual(plugin.context.sent, [])
 
+    def test_selfie_ready_accepts_new_omni_personas(self):
+        """新版万象画卷把形象放在 plugin_config.personas 里，不能判成「没有」。"""
+
+        class Profile:
+            ref_images = ["templates/amo_persona_front.png"]
+            persona_base_prompt = ""
+
+        class NewOmni(FakeOmni):
+            def __init__(self):
+                super().__init__()
+                self.plugin_config = type("Cfg", (), {
+                    "persona_ref_image": "",
+                    "persona_base_prompt": "",
+                    "personas": [Profile()],
+                    "persona_config": "",
+                })()
+
+        engine, _ = engine_for()
+        self.assertTrue(engine._selfie_ready(NewOmni()))
+
+    def test_selfie_ready_accepts_persona_config_json(self):
+        import json as _json
+
+        class JsonOmni(FakeOmni):
+            def __init__(self):
+                super().__init__()
+                self.plugin_config = type("Cfg", (), {
+                    "persona_ref_image": "",
+                    "persona_base_prompt": "",
+                    "personas": [],
+                    "persona_config": _json.dumps({
+                        "active_persona_id": "amo",
+                        "profiles": [{"id": "amo", "persona_base_prompt": "同一个女孩"}],
+                    }),
+                })()
+
+        engine, _ = engine_for()
+        self.assertTrue(engine._selfie_ready(JsonOmni()))
+
+    def test_selfie_ready_falls_back_to_own_templates(self):
+        engine, plugin = engine_for()
+        tpl = os.path.join(plugin.plugin_dir, "templates")
+        os.makedirs(tpl, exist_ok=True)
+        open(os.path.join(tpl, "amo_persona_front.png"), "wb").write(b"x")
+
+        class BareOmni(FakeOmni):
+            def __init__(self):
+                super().__init__()
+                self.plugin_config = type("Cfg", (), {
+                    "persona_ref_image": "", "persona_base_prompt": "",
+                    "personas": [], "persona_config": "",
+                })()
+
+        self.assertTrue(engine._selfie_ready(BareOmni()))
+
+    def test_selfie_ready_false_when_nothing_configured(self):
+        class BareOmni(FakeOmni):
+            def __init__(self):
+                super().__init__()
+                self.plugin_config = type("Cfg", (), {
+                    "persona_ref_image": "", "persona_base_prompt": "",
+                    "personas": [], "persona_config": "",
+                })()
+
+        engine, _ = engine_for()
+        self.assertFalse(engine._selfie_ready(BareOmni()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -534,11 +534,52 @@ class PhotoEngine:
         return self._omni
 
     def _selfie_ready(self, omni):
+        """她能不能出「自拍」：看万象画卷里有没有她的形象。
+
+        不同版本的 OmniDraw 把形象放在不同地方（踩过坑：只认老字段时，
+        新版照样有形象，但这里判成「没有」→ 自拍被降级成街景）：
+        - 老版：``plugin_config.persona_ref_image`` / ``persona_base_prompt``；
+        - 新版：``plugin_config.personas``（每项带 ``ref_images`` / 基底提示词），
+          配置里落成 JSON 的 ``persona_config``；
+        - 都没有时，看我们自己 ``templates/`` 里有没有三视图。
+        """
         try:
-            cfg = getattr(omni, "plugin_config", None)
-            ref = str(getattr(cfg, "persona_ref_image", "") or "")
-            base = str(getattr(cfg, "persona_base_prompt", "") or "")
-            return bool(ref or base)
+            conf = getattr(omni, "plugin_config", None)
+            if conf is not None:
+                for key in ("persona_ref_image", "persona_base_prompt"):
+                    if str(getattr(conf, key, "") or "").strip():
+                        return True
+                for profile in (getattr(conf, "personas", None) or []):
+                    for key in ("ref_images", "persona_ref_image", "ref_image"):
+                        value = getattr(profile, key, None)
+                        if isinstance(value, (list, tuple, set)):
+                            if any(str(item).strip() for item in value):
+                                return True
+                        elif str(value or "").strip():
+                            return True
+                    if str(getattr(profile, "persona_base_prompt", "") or "").strip():
+                        return True
+                raw = str(getattr(conf, "persona_config", "") or "").strip()
+                if raw:
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        data = {}
+                    if isinstance(data, dict):
+                        active = str(data.get("active_persona_id") or "")
+                        for profile in (data.get("profiles") or []):
+                            if not isinstance(profile, dict):
+                                continue
+                            if active and str(profile.get("id") or "") not in ("", active):
+                                continue
+                            if (str(profile.get("persona_ref_image") or "").strip()
+                                    or str(profile.get("persona_base_prompt") or "").strip()):
+                                return True
+        except Exception as _amo_exc:
+            _note_swallowed("photo_engine.PhotoEngine._selfie_ready", _amo_exc)
+        # 最后看我们自己的模板：OmniDraw 那边没配形象时，三视图仍然是可用的参考
+        try:
+            return bool(self.persona_refs())
         except Exception as _amo_exc:
             _note_swallowed("photo_engine.PhotoEngine._selfie_ready", _amo_exc)
             return False
