@@ -442,6 +442,12 @@
     "description": "AI 润色",
     "default": true
   },
+  "polish_min_chars": {
+    "type": "int",
+    "description": "短于这个字数就不润色",
+    "default": 30,
+    "hint": "回复短于这个字数直接发，省一次模型调用；咨询类仍然会润色。0=一律润色。"
+  },
   "polish_native": {
     "type": "bool",
     "description": "也润色 AstrBot 原生回复",

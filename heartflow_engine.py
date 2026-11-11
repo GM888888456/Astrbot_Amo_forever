@@ -1251,6 +1251,7 @@ class HeartflowEngine:
                     system_prompt=system_inst,
                     image_urls=[]
                 )
+                self.p._record_tokens("judge", provider, resp)
                 data = _extract_json(resp.completion_text.strip())
                 scores = {
                     "relevance": safe_extract_score(data, "relevance", self.score_min, self.score_max),
@@ -1378,6 +1379,7 @@ class HeartflowEngine:
                     system_prompt=system_inst,
                     image_urls=[]
                 )
+                self.p._record_tokens("judge", provider, resp)
                 data = _extract_json(resp.completion_text.strip())
                 should_reply = bool(data.get("should_reply", False))
                 target = _normalize_target(data.get("target")) or "unknown"

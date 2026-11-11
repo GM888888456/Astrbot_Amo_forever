@@ -507,7 +507,7 @@ except Exception:
 
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.4.0"
+PLUGIN_VERSION = "7.4.1"
 
 # 这些开关是面板/主链路的底座：隐藏开关并强制开启，避免误关后整块功能消失。
 FORCED_ON_CONFIG_KEYS = frozenset({
@@ -1254,12 +1254,25 @@ def looks_like_ai_admission(text):
     return bool(AI_ADMISSION_RE.search(str(text or "")))
 
 
-# 她不能报后台：模型名、厂商、插件名、API、提示词这类都不该出现在聊天里
+# 她不能报后台：模型名、厂商、插件名、API、提示词这类都不该出现在聊天里。
+# 但「插件/提示词/模型」这些词在正常的开发闲聊里也会出现（用户在聊他自己的项目），
+# 一刀切会把正常回复也换成「秘密，不告诉你」。所以只认「说的是她自己」的那种句子。
 MODEL_LEAK_RE = re.compile(
     r"(?:deepseek|openai|anthropic|claude|gemini|chatgpt|gpt-?[0-9]|qwen|通义|千问|"
     r"glm|chatglm|智谱|moonshot|kimi|doubao|豆包|ernie|文心|hunyuan|混元|llama|mistral|"
     r"grok|sonnet|opus|haiku|dp-?[0-9]|llm|大模型|语言模型|模型名称|api\s*key|"
     r"token|提示词|prompt|system\s*prompt|插件|astrbot)",
+    re.I,
+)
+
+# 「我自己就是/我用的是/我基于…」这类自曝句，才真的算泄漏后台
+SELF_LEAK_RE = re.compile(
+    r"(?:我|本人|咱)(?:就|也|其实|确实|大概)?(?:是|用的?|基于|跑在|接的?|部署在|由)"
+    r"[^。！？，]{0,24}(?:模型|提示词|插件|astrbot|api|服务端|后端)"
+    r"|(?:我|本人)的(?:模型|提示词|系统提示|底层|设定文件|配置)"
+    r"|(?:我|本人)(?:被|是由)[^。！？，]{0,16}(?:训练|开发|部署|接入)"
+    r"|(?:我|本人)(?:用的?是?|在用的?|跑)在?[^。！？，]{0,16}"
+    r"(?:deepseek|openai|anthropic|claude|gpt|gemini|qwen|智谱|通义|豆包|kimi)",
     re.I,
 )
 
@@ -1276,17 +1289,40 @@ def looks_like_defensive_reply(text):
     return bool(DEFENSIVE_REPLY_RE.search(str(text or "")))
 
 
+# 真要拦时的换口话术：轮换几句，别每次都「秘密，不告诉你」
+LEAK_DEFLECTS = (
+    "这个啊，不聊。",
+    "问点别的吧。",
+    "说这个干嘛。",
+    "不告诉你。",
+    "你猜。",
+)
+
+
+def leak_deflect_text():
+    return random.choice(LEAK_DEFLECTS)
+
+
 def looks_like_model_leak(text):
-    """回复里有没有把模型名/厂商/插件/API 这类后台信息说出来。"""
+    """回复里有没有把她自己的模型/提示词/插件这类后台信息说出来。
+
+    注意：只拦「说的是她自己」的句子。用户在聊自己的项目（插件、提示词、模型选型）时，
+    她顺着聊是正常的，不能被换成「秘密，不告诉你」。
+    """
     raw = str(text or "")
     if not raw:
         return False
-    # 只有短回答或带“模型/接/用/是”这类上下文才算泄漏，避免误伤正常聊天
     if not MODEL_LEAK_RE.search(raw):
         return False
-    if len(re.sub(r"\s+", "", raw)) > 60:
-        return False
-    return True
+    if SELF_LEAK_RE.search(raw):
+        return True
+    # 短句里直接报出厂商/模型名、且没有任何「他/你/这个项目」之类的第三方指向时，
+    # 仍然按自曝处理（她不会无端说这些名字）
+    compact = re.sub(r"\s+", "", raw)
+    if len(compact) <= 12 and re.search(
+            r"(?:deepseek|openai|anthropic|claude|gemini|chatgpt|qwen|智谱|通义)", compact, re.I):
+        return True
+    return False
 
 
 def typing_delay_ms(text, base=700, per_char=400, cap=20000):
@@ -1897,6 +1933,15 @@ class AmoDB:
                     region TEXT DEFAULT '',
                     example TEXT DEFAULT ''
                 );
+                CREATE TABLE IF NOT EXISTS token_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL DEFAULT 0,
+                    kind TEXT DEFAULT '',
+                    model TEXT DEFAULT '',
+                    input_other INTEGER DEFAULT 0,
+                    input_cached INTEGER DEFAULT 0,
+                    output INTEGER DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS relation_network (
                     a_uid TEXT NOT NULL,
                     b_uid TEXT NOT NULL,
@@ -2361,6 +2406,63 @@ class AmoDB:
                 (str(umo), int(limit)),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+    # ---------- 自记账：插件内部调用（判分/润色/日记）不进 provider_stats ----------
+
+    def record_tokens(self, kind, model, input_other, input_cached, output, ts=None):
+        """记一次插件内部调用的 token；出错绝不影响主流程。"""
+        try:
+            def _num(value):
+                try:
+                    return int(float(value or 0))
+                except Exception:
+                    return 0
+
+            self.conn.execute(
+                "INSERT INTO token_usage(ts, kind, model, input_other, input_cached, output) "
+                "VALUES(?,?,?,?,?,?)",
+                (float(ts or now_ts()), str(kind or ""), str(model or ""),
+                 _num(input_other), _num(input_cached), _num(output)),
+            )
+            self.conn.commit()
+        except Exception as exc:
+            try:
+                logger.debug("[amo] 记 token 失败: %s" % exc)
+            except Exception:
+                pass
+
+    def usage_since(self, start_ts=None):
+        """按 kind 汇总插件内部调用。"""
+        sql = ("SELECT kind, COUNT(*), SUM(input_other), SUM(input_cached), SUM(output) "
+               "FROM token_usage")
+        params = []
+        if start_ts is not None:
+            sql += " WHERE ts>=?"
+            params.append(float(start_ts))
+        sql += " GROUP BY kind"
+        total = {"calls": 0, "input_other": 0, "input_cached": 0, "output": 0,
+                 "peak": {"calls": 0, "input_miss": 0, "input_cached": 0, "output": 0},
+                 "idle": {"calls": 0, "input_miss": 0, "input_cached": 0, "output": 0},
+                 "by_kind": {}}
+        try:
+            rows = self.conn.execute(sql, params).fetchall()
+        except Exception:
+            return total
+        for kind, calls, miss, cached, out in rows:
+            entry = {"calls": int(calls or 0), "input_other": int(miss or 0),
+                     "input_cached": int(cached or 0), "output": int(out or 0)}
+            entry["cost"] = usage_cost({
+                "peak": {"input_miss": entry["input_other"], "input_cached": entry["input_cached"],
+                         "output": entry["output"], "calls": entry["calls"]},
+            })
+            total["by_kind"][str(kind or "other")] = entry
+            for key in ("calls", "input_other", "input_cached", "output"):
+                total[key] += entry[key]
+        total["cost"] = usage_cost({
+            "peak": {"input_miss": total["input_other"], "input_cached": total["input_cached"],
+                     "output": total["output"], "calls": total["calls"]},
+        })
+        return total
 
     def messages_since_ts(self, since_ts, limit=60):
         """按时间取最近的消息（半小时摘要用），新的在后。"""
@@ -3900,7 +4002,7 @@ class HumanState:
                 % (chunk[0].get("start") or "", chunk[-1].get("end") or "", "\n".join(lines))
             )
             try:
-                raw = await llm.chat_raw(umo, system, prompt)
+                raw = await llm.chat_raw(umo, system, prompt, kind="diary")
             except Exception:
                 continue
             rows = json_extract_list(raw)
@@ -4302,7 +4404,7 @@ class LLMService:
             logger.warning("[amo] 获取对话模型失败: %s" % exc)
             return None
 
-    async def chat_raw(self, umo, system, prompt, contexts=None):
+    async def chat_raw(self, umo, system, prompt, contexts=None, kind="other"):
         provider = await self.provider(umo)
         if provider is None:
             return ""
@@ -4315,14 +4417,22 @@ class LLMService:
         except Exception as exc:
             logger.error("[amo] LLM 调用失败: %s" % exc)
             return ""
+        self.p._record_tokens(kind, provider, response)
         return str(getattr(response, "completion_text", "") or "").strip()
 
-    async def chat(self, umo, system, prompt, contexts=None, limit=300):
-        return clean_reply(await self.chat_raw(umo, system, prompt, contexts), limit)
+    async def chat(self, umo, system, prompt, contexts=None, limit=300, kind="other"):
+        return clean_reply(await self.chat_raw(umo, system, prompt, contexts, kind=kind), limit)
 
     async def polish(self, umo, text, tone, state_text="", relation="", name="", persona="", style="", consult=False):
         text = (text or "").strip()
         if not text or not self.p.cfg_bool("enable_polish", True):
+            return text
+        # 短回复不值得再调一次模型：省一次完整调用，也少几十秒延迟
+        try:
+            floor = max(0, int(self.p.cfg_int("polish_min_chars", 30)))
+        except Exception:
+            floor = 30
+        if floor and len(text) < floor and not consult:
             return text
         system = (
             "你就是这个角色本人，不是AI助手，也不是在润色一段AI台词。"
@@ -4349,7 +4459,8 @@ class LLMService:
             "7. 不要扩写，不要新增原句没有的信息。"
             + ("\n8. 这是咨询/步骤类：用角色口吻简短回答，不要客服腔。" if consult else "")
         )
-        result = await self.chat(umo, system, prompt, limit=self.p.cfg_int("max_reply_chars", 220))
+        result = await self.chat(umo, system, prompt, limit=self.p.cfg_int("max_reply_chars", 220),
+                                 kind="polish")
         if not result:
             return text
         if looks_like_ai_admission(result):
@@ -5580,6 +5691,31 @@ class HumanCorePlugin(Star):
                     await self._sync_with_data_plugin()
             except Exception as exc:
                 logger.debug("[amo] 加载完成补同步失败: %s" % exc)
+
+    def _record_tokens(self, kind, provider, response):
+        """把这次调用的 token 记进自己的表；provider_stats 只统计主回复，这里补内部调用。"""
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                return
+            if isinstance(usage, dict):
+                miss = usage.get("input_other", 0)
+                cached = usage.get("input_cached", 0)
+                out = usage.get("output", 0)
+            else:
+                miss = getattr(usage, "input_other", 0)
+                cached = getattr(usage, "input_cached", 0)
+                out = getattr(usage, "output", 0)
+            if not (int(miss or 0) or int(cached or 0) or int(out or 0)):
+                return
+            model = ""
+            try:
+                model = str(provider.get_model() or "")
+            except Exception:
+                model = ""
+            self.db.record_tokens(kind, model, miss, cached, out)
+        except Exception as exc:
+            logger.debug("[amo] 记 token 失败: %s" % exc)
 
     def _spawn(self, coro):
         try:
@@ -7048,7 +7184,8 @@ class HumanCorePlugin(Star):
                activity.get("outfit") or "常服", cached or "（还没写）", "\n".join(lines))
         )
         try:
-            raw = await asyncio.wait_for(self.llm.chat_raw("", system, prompt), timeout=60)
+            raw = await asyncio.wait_for(
+                self.llm.chat_raw("", system, prompt, kind="diary"), timeout=60)
         except Exception as exc:
             logger.debug("[amo] 聊天摘要失败: %s" % exc)
             return
@@ -9781,7 +9918,7 @@ class HumanCorePlugin(Star):
     async def _send_to_umo(self, umo, text, quote_id=None, group=False):
         text = clean_reply(text, self.cfg_int("max_reply_chars", 220))
         if looks_like_model_leak(text):
-            text = "秘密，不告诉你。"
+            text = leak_deflect_text()
         if not text or not umo:
             return False
         segments = self._segment(text)
@@ -10551,7 +10688,7 @@ class HumanCorePlugin(Star):
             if looks_like_model_leak(text):
                 # 模型名/厂商是后台信息，不能报；按角色打岔带过去
                 logger.info("[amo] 拦截后台信息泄漏: %s" % text[:60])
-                text = "秘密，不告诉你。"
+                text = leak_deflect_text()
                 result.chain = [Comp.Plain(text=text)]
             if not text.strip():
                 return
@@ -12658,6 +12795,7 @@ class HumanCorePlugin(Star):
             ("/photo/prompt_saved", self.api_photo_prompt_saved, ["GET", "POST"]),
             ("/photo/sheet", self.api_photo_sheet, ["GET", "POST"]),
             ("/photo/job", self.api_photo_job, ["GET", "POST"]),
+            ("/photo/self", self.api_photo_self, ["GET", "POST"]),
             ("/photo/persona", self.api_photo_persona, ["GET", "POST"]),
             ("/photo/persona/delete", self.api_photo_persona_delete, ["GET", "POST"]),
             ("/photo/persona/toggle", self.api_photo_persona_toggle, ["GET", "POST"]),
@@ -13803,6 +13941,14 @@ class HumanCorePlugin(Star):
             for label, start in (("today", day_start), ("week", day_start - 6 * 86400), ("total", None)):
                 usage = summarize_token_usage(db_path, start)
                 usage["cost"] = usage_cost(usage, prices)
+                # 插件内部调用（判分/润色/日记）不进 provider_stats，这里补自记账
+                internal = self.db.usage_since(start)
+                usage["internal"] = internal
+                usage["all_calls"] = int(usage.get("calls") or 0) + int(internal["calls"])
+                usage["all_input"] = (int(usage.get("input_miss") or 0) + int(usage.get("input_cached") or 0)
+                                      + int(internal["input_other"]) + int(internal["input_cached"]))
+                usage["all_output"] = int(usage.get("output") or 0) + int(internal["output"])
+                usage["all_cost"] = float(usage.get("cost") or 0) + float(internal["cost"])
                 result[label] = usage
             return result
 
@@ -14611,6 +14757,69 @@ class HumanCorePlugin(Star):
                 pass
             jobs[job_id].update(status="error", msg="事件循环不可用")
         return job_id
+
+    # ---------- 世界页照片：单击自拍、三击一寸证件照 ----------
+
+    ID_PHOTO_PROMPT = (
+        "一寸证件照，正面免冠，纯白背景，白衬衫，端正坐姿，表情自然，"
+        "标准证件照构图，光线均匀，高清"
+    )
+
+    def _selfie_prompt(self):
+        """按她此刻的穿搭/地点/在做的事拼自拍提示词。"""
+        activity = {}
+        try:
+            activity = self.state.current_activity() or {}
+        except Exception:
+            activity = {}
+        parts = ["自拍"]
+        outfit = str(activity.get("outfit") or "").strip()
+        if outfit:
+            parts.append("穿着" + outfit)
+        place = str(activity.get("place") or "").strip()
+        if place:
+            parts.append("在" + place)
+        doing = str(activity.get("activity") or "").strip()
+        if doing:
+            parts.append(doing[:30])
+        parts.extend(["自然光", "手机前置摄像头", "生活感"])
+        return "，".join(parts)
+
+    async def _draw_for_panel(self, prompt):
+        """调生图插件出一张图，返回 data URL（面板直接显示）。"""
+        plugin = self._image_plugin()
+        if plugin is None:
+            raise RuntimeError("没装生图插件（Astrbot_Amo_Image）")
+        umo = str(self._last_umo or self._first_private_umo() or "")
+        uid = ""
+        try:
+            for profile in self.db.proactive_profiles(limit=5) or []:
+                uid = str(profile.get("uid") or "")
+                if uid:
+                    break
+        except Exception:
+            uid = ""
+        data = await asyncio.wait_for(plugin.draw_for(umo, uid, prompt), timeout=180)
+        if not data:
+            raise RuntimeError("没出图（后端报错或超时）")
+        import base64 as _b64
+        return "data:image/png;base64," + _b64.b64encode(data).decode()
+
+    async def api_photo_self(self):
+        """世界页那张照片：kind=self 自拍，kind=id 一寸证件照。"""
+        await self._ensure_ready()
+        data = await self._body()
+        data = data if isinstance(data, dict) else {}
+        kind = str(data.get("kind") or "self").strip().lower()
+        if kind not in ("self", "id"):
+            kind = "self"
+        prompt = self.ID_PHOTO_PROMPT if kind == "id" else self._selfie_prompt()
+
+        async def build():
+            image = await self._draw_for_panel(prompt)
+            return {"kind": kind, "prompt": prompt, "image": image}
+
+        return {"code": 0, "data": {"job": self._photo_job_start("self_" + kind, build())}}
 
     async def api_photo_job(self):
         await self._ensure_ready()

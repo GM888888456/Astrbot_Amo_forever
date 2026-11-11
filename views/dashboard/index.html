@@ -297,6 +297,17 @@
     .world-photo:hover, .world-photo:focus-visible { border-color: var(--line); outline: none; }
     .world-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .world-photo img[hidden] { display: none; }
+    .world-photo { position: relative; }
+    .world-photo.loading { border-color: var(--pink); }
+    .world-photo.loading::after { content: ""; position: absolute; inset: 0;
+      background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,.5) 50%, transparent 80%);
+      animation: worldPhotoSweep 1.2s linear infinite; }
+    .world-photo.loading img { opacity: .45; }
+    .world-photo::before { content: attr(data-state); position: absolute; inset: auto 0 0 0;
+      font-size: 11px; text-align: center; padding: 3px 4px; color: var(--muted);
+      background: rgba(255,255,255,.82); z-index: 1; }
+    .world-photo[data-state=""]::before, .world-photo:not([data-state])::before { content: none; }
+    @keyframes worldPhotoSweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
     .schedule-group > summary { border-bottom: 1px solid var(--line); }
     .sheet { position: fixed; inset: 0; z-index: 30; background: var(--card); }
     .sheet[hidden] { display: none; }
@@ -575,7 +586,7 @@
         <div class="row between">
           <div>
             <div class="label">对话用量</div>
-            <div class="sub" id="usageRange">今日 · 最近 7 天 · 累计（只读 AstrBot 统计）</div>
+            <div class="sub" id="usageRange">主回复读 AstrBot 统计 · 判分/润色/日记读插件自记账</div>
           </div>
           <button class="tab" id="usageRefresh" type="button">刷新</button>
         </div>
@@ -609,6 +620,8 @@
           </div>
           <div class="value" id="balanceValue">—</div>
         </div>
+        <div class="sub" id="usageInternal" style="margin-top:10px"></div>
+        <div class="sub" id="usageTotal" style="margin-top:4px"></div>
         <div class="sub" id="usageModels" style="margin-top:10px"></div>
         <div class="row between" style="margin-top:14px">
           <div>
@@ -1486,7 +1499,71 @@
           if (saved) applyWorldPhoto(saved);
         } catch (error) {}
       }
+      bindWorldPhotoTap(photo);
       return photo;
+    }
+
+    // 单击 = 让她拍一张自拍；三击 = 生成一寸证件照。生成要几十秒，先占位再轮询。
+    let worldPhotoTapTimer = null;
+    let worldPhotoTapCount = 0;
+    let worldPhotoBusy = false;
+
+    function bindWorldPhotoTap(photo) {
+      if (!photo || photo.dataset.bound === "1") return;
+      photo.dataset.bound = "1";
+      photo.addEventListener("click", () => {
+        if (worldPhotoBusy) return;
+        worldPhotoTapCount += 1;
+        if (worldPhotoTapTimer) clearTimeout(worldPhotoTapTimer);
+        worldPhotoTapTimer = setTimeout(() => {
+          const count = worldPhotoTapCount;
+          worldPhotoTapCount = 0;
+          worldPhotoTapTimer = null;
+          if (count >= 3) requestWorldPhoto("id");
+          else requestWorldPhoto("self");
+        }, 600);
+      });
+      photo.title = "单击：拍一张自拍；连点三下：一寸证件照";
+    }
+
+    async function pollPhotoJob(jobId, timeoutMs) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        let payload = {};
+        try {
+          payload = objectFrom(await call("photo/job", { id: jobId })) || {};
+        } catch (error) {
+          continue;
+        }
+        if (payload.status === "done") return payload.data || {};
+        if (payload.status === "error") throw new Error(payload.msg || "生成失败");
+      }
+      throw new Error("生成超时，稍后再试");
+    }
+
+    async function requestWorldPhoto(kind) {
+      const photo = document.getElementById("worldPhoto");
+      if (!photo) return;
+      worldPhotoBusy = true;
+      photo.classList.add("loading");
+      const label = kind === "id" ? "正在生成一寸证件照…" : "正在拍照…";
+      photo.dataset.state = label;
+      try {
+        const start = objectFrom(await call("photo/self", { kind })) || {};
+        const jobId = start.job;
+        if (!jobId) throw new Error("后端没返回任务号");
+        const data = await pollPhotoJob(jobId, 200000);
+        if (!data.image) throw new Error("没拿到图片");
+        applyWorldPhoto(data.image);
+        try { localStorage.setItem(WORLD_PHOTO_KEY, data.image); } catch (error) {}
+        photo.dataset.state = "";
+      } catch (error) {
+        photo.dataset.state = String((error && error.message) || error).slice(0, 40);
+      } finally {
+        photo.classList.remove("loading");
+        worldPhotoBusy = false;
+      }
     }
 
     function renderWorld(world) {
@@ -1805,6 +1882,24 @@
         } else {
           setText("balanceValue", "—");
           setText("balanceSub", balance.error || "查询失败");
+        }
+        const internal = today.internal || {};
+        const kindLabel = {
+          judge: "判分", polish: "润色", diary: "日记", schedule: "日程",
+          summary: "摘要", extract: "抽取", proactive: "主动", other: "其它",
+        };
+        const kinds = Object.entries(internal.by_kind || {})
+          .sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0))
+          .map(([key, value]) => (kindLabel[key] || key) + " " + (value.calls || 0) + " 次/"
+            + usageNum((value.input_other || 0) + (value.input_cached || 0) + (value.output || 0)));
+        setText("usageInternal", "插件内部（判分/润色/日记）：" +
+          (internal.calls || 0) + " 次 · 输入 " +
+          usageNum((internal.input_other || 0) + (internal.input_cached || 0)) +
+          " · 输出 " + usageNum(internal.output || 0) + " · " + money(internal.cost));
+        setText("usageTotal", "合计（主回复 + 内部）：" + (today.all_calls || 0) + " 次 · "
+          + money(today.all_cost || 0));
+        if (kinds.length) {
+          setText("usageInternal", "插件内部：" + kinds.join(" · ") + " · 共 " + money(internal.cost));
         }
         const models = Array.isArray(today.by_model) ? today.by_model : [];
         setText("usageModels", models.length
@@ -2957,16 +3052,18 @@
     setTimeout(() => boot(0), 400);
     setInterval(() => { load().catch(() => {}); }, 60000);
     /* ---------- 关系图谱（神经元） ---------- */
-    // 关系图统一成五档，颜色按用户指定：仇人黑、抵触黄、普通白、熟识紫、恋人粉。
+    // 关系图统一成五档：仇人黑、抵触黄、陌生人蓝、熟识紫、恋人粉。
+    // 「普通/陌生人」原来用白色，浅底上几乎看不见还刺眼，改成 66ccff。
     const NEURON_COLORS = {
       仇恨: "#1f1f1f",
       抵触: "#e0b341",
-      普通: "#ffffff",
+      普通: "#66ccff",
       熟识: "#9b8fd0",
       恋人: "#e06a9a",
     };
-    const NEURON_STROKES = { 普通: "#cfc9d8" };
+    const NEURON_STROKES = { 普通: "#4fb8e8" };
     const NEURON_TIERS = ["仇恨", "抵触", "普通", "熟识", "恋人"];
+    const NEURON_TIER_LABELS = { 仇恨: "仇人", 抵触: "抵触", 普通: "陌生人", 熟识: "熟人", 恋人: "恋人" };
     const BRAIN_REL_RANK = { 仇恨: 0, 抵触: 1, 普通: 2, 熟识: 3, 恋人: 4 };
     let neuronGraph = null;
     let neuronActive = "";
@@ -3165,8 +3262,9 @@
         const dot = document.createElement("i");
         dot.className = "legend-dot";
         dot.style.background = NEURON_COLORS[tier];
+        dot.style.background = NEURON_COLORS[tier];
         item.appendChild(dot);
-        item.appendChild(document.createTextNode(tier));
+        item.appendChild(document.createTextNode(NEURON_TIER_LABELS[tier] || tier));
         legend.appendChild(item);
       });
     }

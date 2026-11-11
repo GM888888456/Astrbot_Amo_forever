@@ -1552,7 +1552,7 @@ class ScheduleEngine:
             "\n".join(lines),
         )
         try:
-            raw = await asyncio.wait_for(llm.chat_raw(umo, system, prompt), timeout=15)
+            raw = await asyncio.wait_for(llm.chat_raw(umo, system, prompt, kind="schedule"), timeout=15)
         except Exception:
             return items
         data = json_extract(raw)
@@ -1617,7 +1617,7 @@ class ScheduleEngine:
         prompt = self._diary_prompt(ctx, item, prev_item, next_item, prev_diary)
         raw = ""
         try:
-            raw = await asyncio.wait_for(llm.chat_raw(umo, system, prompt), timeout=60)
+            raw = await asyncio.wait_for(llm.chat_raw(umo, system, prompt, kind="diary"), timeout=60)
         except Exception:
             raw = ""
         diary = _parse(raw)
@@ -1630,7 +1630,7 @@ class ScheduleEngine:
                 + "这一小时必须承接这个事实，不能写他还没回来、不在家、你一个人。"
             )
             try:
-                raw = await asyncio.wait_for(llm.chat_raw(umo, system, strict), timeout=60)
+                raw = await asyncio.wait_for(llm.chat_raw(umo, system, strict, kind="diary"), timeout=60)
             except Exception:
                 raw = ""
             retried = _parse(raw)
