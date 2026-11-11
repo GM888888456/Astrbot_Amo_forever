@@ -292,11 +292,14 @@
     .world-row p { margin: 0; color: var(--text); white-space: pre-wrap; }
     .world-photo { grid-column: 2; grid-row: 1 / span 2; align-self: stretch; justify-self: end;
       height: 100%; aspect-ratio: 5 / 7; width: auto; max-width: 220px;
-      min-width: 84px; min-height: 118px;
+      min-width: 96px; min-height: 134px;
       border: 1px solid var(--line); border-radius: 10px; background: var(--card);
       overflow: hidden; cursor: pointer; touch-action: manipulation; }
     .world-photo:hover, .world-photo:focus-visible { border-color: var(--line); outline: none; }
-    .world-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* 绝对定位：图片不再参与 .world-photo 的尺寸计算，
+       否则「刚生成」和「刷新后」量出来的格子大小会不一样 */
+    .world-photo img { position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; display: block; }
     .world-photo img[hidden] { display: none; }
     .world-photo { position: relative; }
     .world-photo.loading { border-color: var(--pink); }
@@ -1472,11 +1475,15 @@
 
     // 世界文档照片：只做本地预览，不上传后端、不解析。
     const WORLD_PHOTO_KEY = "amo_world_portrait";
+    const PANEL_BUILD = "2026-11-11-photo2";
+    let lastWorldPhoto = "";
+    let worldPhotoLoaded = false;
     let worldPhotoTimer = null;
 
     function applyWorldPhoto(src) {
       const img = document.getElementById("worldPhotoImg");
       if (!img) return;
+      lastWorldPhoto = src || "";
       if (src) {
         img.src = src;
         img.hidden = false;
@@ -1507,6 +1514,7 @@
           const saved = localStorage.getItem(WORLD_PHOTO_KEY) || "";
           if (saved) applyWorldPhoto(saved);
         } catch (error) {}
+        if (img && !img.getAttribute("src") && lastWorldPhoto) applyWorldPhoto(lastWorldPhoto);
       }
       bindWorldPhotoTap(photo);
       return photo;
@@ -1537,10 +1545,28 @@
       photo.title = "单击：生成证件照；双击：打开二级 UI；三击：取消";
     }
 
+    // 刷新/重开面板后取回服务端存的那张图（iframe 里 localStorage 不可靠）
+    function loadSavedWorldPhoto() {
+      if (worldPhotoLoaded) return;
+      worldPhotoLoaded = true;
+      try {
+        const pending = call("photo/last", {});
+        pending.then((res) => {
+          const data = objectFrom(res) || {};
+          const src = data.image || "";
+          if (!src) return;
+          const img = document.getElementById("worldPhotoImg");
+          if (!img || img.getAttribute("src")) return;
+          applyWorldPhoto(src);
+        }).catch(() => {});
+      } catch (error) {}
+    }
+
     function clearWorldPhoto() {
       const photo = document.getElementById("worldPhoto");
       applyWorldPhoto("");
       try { localStorage.removeItem(WORLD_PHOTO_KEY); } catch (error) {}
+      try { const p = call("photo/clear", {}); if (p && p.catch) p.catch(() => {}); } catch (error) {}
       if (photo) photo.dataset.state = "已取消";
       setTimeout(() => { if (photo) photo.dataset.state = ""; }, 1400);
     }
@@ -1612,29 +1638,56 @@
       photo.classList.add("loading");
       const label = kind === "id" ? "正在生成证件照…" : "正在拍照…";
       photo.dataset.state = label;
+      let jobId = "";
+      let report = "unknown";
+      let size = 0;
       try {
-        const start = objectFrom(await call("photo/self", { kind, clothes: clothes || "" })) || {};
-        const jobId = start.job;
+        const start = objectFrom(await call("photo/self", { kind, clothes: clothes || "", build: PANEL_BUILD })) || {};
+        jobId = start.job;
         if (!jobId) throw new Error("后端没返回任务号");
         const data = await pollPhotoJob(jobId, 200000);
         if (!data.image) throw new Error("没拿到图片");
+        size = String(data.image).length;
         applyWorldPhoto(data.image);
         try { localStorage.setItem(WORLD_PHOTO_KEY, data.image); } catch (error) {}
         photo.dataset.state = "";
+        report = "done";
       } catch (error) {
         const msg = String((error && error.message) || error).slice(0, 60);
         photo.dataset.state = msg.slice(0, 40);
         toast("照片生成失败：" + msg, true);
+        report = "error: " + msg;
       } finally {
         photo.classList.remove("loading");
         worldPhotoBusy = false;
       }
+      reportPhotoBack(jobId, kind, report, size);
+    }
+
+    // 浏览器侧结果回报：服务端日志里就能看出是"没拿到图"还是"拿到了没画进 <img>"
+    function reportPhotoBack(jobId, kind, report, size) {
+      let srcLen = -1;
+      try {
+        const img = document.getElementById("worldPhotoImg");
+        srcLen = img ? String(img.getAttribute("src") || "").length : -1;
+      } catch (error) { srcLen = -2; }
+      try {
+        const pending = call("photo/ack", { job: jobId, build: PANEL_BUILD, kind: kind, report: report, size: size, src: srcLen });
+        if (pending && typeof pending.catch === "function") pending.catch(() => {});
+      } catch (error) {}
     }
 
     function renderWorld(world) {
       const box = document.getElementById("worldDoc");
       box.textContent = "";
       ensureWorldPhoto(box);
+      // 服务端存的那张图跟着 worldview 一起回来，刷新也能直接画上
+      const serverPhoto = worldText(world && world.panel_photo) || "";
+      const photoImg = document.getElementById("worldPhotoImg");
+      if (photoImg && !photoImg.getAttribute("src")) {
+        if (serverPhoto) applyWorldPhoto(serverPhoto);
+        else loadSavedWorldPhoto();
+      }
       const rows = [
         ["名字", world.name],
         ["年龄", world.age],

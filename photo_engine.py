@@ -336,7 +336,13 @@ class PhotoEngine:
     # ---------- 主循环 ----------
 
     def _cache_dir(self):
-        base = os.path.dirname(str(getattr(self.plugin.db, "path", "") or "")) or os.getcwd()
+        base = os.path.dirname(str(getattr(self.plugin.db, "path", "") or ""))
+        if not base:
+            # 兜底也必须落在插件数据目录（不写插件安装目录、不写 cwd）
+            plugin_dir = str(getattr(self.plugin, "plugin_dir", "") or "")
+            name = os.path.basename(plugin_dir) or "Astrbot_Amo_forever"
+            parent = os.path.dirname(plugin_dir)
+            base = os.path.join(parent, "plugin_data", name) if parent else os.getcwd()
         path = os.path.join(base, "photo_cache")
         try:
             os.makedirs(path, exist_ok=True)

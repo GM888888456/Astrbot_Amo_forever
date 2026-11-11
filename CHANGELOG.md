@@ -1,5 +1,22 @@
 # Changelog
 
+
+
+## 7.4.5（相框持久化 + 上架合规）
+
+- **刷新后照片消失**：面板跑在 iframe 里，`localStorage` 多半被沙箱禁掉（代码里是静默 catch），
+  所以改由服务端保存——生成后把图缩成 512px JPEG 写到
+  `data/plugin_data/Astrbot_Amo_forever/photo_cache/panel_last.jpg`，先写 `.tmp` 再 `os.replace`，
+  新图直接替换旧图，永远只留一份；
+- **打开/刷新即恢复**：`worldview` 接口顺带把这张图返回（`panel_photo`），前端 `renderWorld` 直接画上，
+  不依赖新增路由；`/photo/last` 保留做兜底，三击取消时调 `/photo/clear` 连服务端一起删；
+- **相框尺寸忽大忽小**：`<img>` 改为绝对定位，不再参与格子尺寸计算；格子固定 96×134（5:7 一寸照比例），
+  刚生成与刷新后完全一致；
+- **面板出图缩到 512px JPEG**（约 76KB；原来 base64 约 50 万字符），桥接不用扛大包；
+- **上架合规**：`photo_engine` 的缓存目录在 `db.path` 为空时不再回退 `os.getcwd()`，改为插件数据目录兜底；
+- 诊断留痕：`/photo/ack` 回报、`/photo/job` 轮询日志、`面板照片已保存/读取` 日志，便于下次定位。
+- 校验：`main.py` 过 `py_compile`，面板内联 JS 过 `node --check`；本机实测生成 → 落盘 → 刷新恢复 → 三击清除。
+
 ## 7.4.4（世界照片修复）
 
 - **轮询永远等不到结果**：AstrBot 桥接会把 `{code, data}` 剥成 `data`，而 `photo/job`

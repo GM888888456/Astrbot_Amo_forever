@@ -12810,6 +12810,9 @@ class HumanCorePlugin(Star):
             ("/photo/sheet", self.api_photo_sheet, ["GET", "POST"]),
             ("/photo/job", self.api_photo_job, ["GET", "POST"]),
             ("/photo/self", self.api_photo_self, ["GET", "POST"]),
+            ("/photo/ack", self.api_photo_ack, ["GET", "POST"]),
+            ("/photo/last", self.api_photo_last, ["GET", "POST"]),
+            ("/photo/clear", self.api_photo_clear, ["GET", "POST"]),
             ("/photo/persona", self.api_photo_persona, ["GET", "POST"]),
             ("/photo/persona/delete", self.api_photo_persona_delete, ["GET", "POST"]),
             ("/photo/persona/toggle", self.api_photo_persona_toggle, ["GET", "POST"]),
@@ -14839,7 +14842,88 @@ class HumanCorePlugin(Star):
         if not data:
             raise RuntimeError("没出图（后端报错或超时）")
         import base64 as _b64
+        # 相框只有 84~220px：缩到 512px 的 JPEG，base64 从约 500KB 降到几十 KB，
+        # 桥接不用扛大包，localStorage 也存得下。缩图失败就用原图。
+        try:
+            import io as _io
+            from PIL import Image as _Image
+            _img = _Image.open(_io.BytesIO(data))
+            _img = _img.convert("RGB")
+            if _img.width > 512:
+                _img = _img.resize((512, max(1, int(_img.height * 512.0 / _img.width))), _Image.LANCZOS)
+            _buf = _io.BytesIO()
+            _img.save(_buf, format="JPEG", quality=88)
+            _small = _buf.getvalue()
+            logger.info("[amo] 面板照片缩图: %d -> %d 字节" % (len(data), len(_small)))
+            return "data:image/jpeg;base64," + _b64.b64encode(_small).decode()
+        except Exception as _exc:
+            logger.debug("[amo] 面板照片缩图失败（用原图）: %s" % _exc)
         return "data:image/png;base64," + _b64.b64encode(data).decode()
+
+    def _panel_photo_dir(self):
+        """面板照片目录：和数据同处 plugin_data，不写插件安装目录。"""
+        base = os.path.dirname(str(getattr(getattr(self, "db", None), "path", "") or ""))
+        if not base:
+            plugin_dir = str(getattr(self, "plugin_dir", "") or "")
+            name = os.path.basename(plugin_dir) or "Astrbot_Amo_forever"
+            parent = os.path.dirname(plugin_dir)
+            base = os.path.join(parent, "plugin_data", name) if parent else os.getcwd()
+        path = os.path.join(base, "photo_cache")
+        try:
+            os.makedirs(path, exist_ok=True)
+        except Exception:
+            pass
+        return path
+
+    def _panel_photo_file(self):
+        return os.path.join(self._panel_photo_dir(), "panel_last.jpg")
+
+    def _save_panel_photo(self, data_url):
+        """把面板那张图存下来：刷新、重开面板都还在（localStorage 在 iframe 里不可靠）。"""
+        text = str(data_url or "")
+        if "," in text and text.startswith("data:"):
+            text = text.split(",", 1)[1]
+        if not text:
+            return 0
+        import base64 as _b64
+        raw = _b64.b64decode(text)
+        path = self._panel_photo_file()
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(raw)
+        os.replace(tmp, path)  # 旧图被直接替换掉，不会留多份
+        logger.info("[amo] 面板照片已保存（替换旧图）: %d 字节" % len(raw))
+        return len(raw)
+
+    def _panel_photo_data_url(self):
+        import base64 as _b64
+        try:
+            with open(self._panel_photo_file(), "rb") as fh:
+                raw = fh.read()
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        return "data:image/jpeg;base64," + _b64.b64encode(raw).decode()
+
+    async def api_photo_last(self):
+        """面板打开时取回上次那张图（小 JPEG，几十 KB）。"""
+        await self._ensure_ready()
+        image = self._panel_photo_data_url()
+        logger.info("[amo] 面板照片读取(/photo/last): %d 字符" % len(image))
+        return {"code": 0, "data": {"image": image, "bytes": len(image)}}
+
+    async def api_photo_clear(self):
+        """三击取消：把服务端那张也删掉，否则刷新又回来。"""
+        await self._ensure_ready()
+        removed = False
+        try:
+            os.remove(self._panel_photo_file())
+            removed = True
+        except Exception:
+            removed = False
+        logger.info("[amo] 面板照片已清除: %s" % ("是" if removed else "本来就没有"))
+        return {"code": 0, "data": {"removed": removed}}
 
     async def api_photo_self(self):
         """世界页那张照片：kind=self 自拍，kind=id 一寸证件照。"""
@@ -14851,10 +14935,15 @@ class HumanCorePlugin(Star):
             kind = "self"
         clothes = str(data.get("clothes") or "").strip()
         prompt = self._id_photo_prompt(clothes) if kind == "id" else self._selfie_prompt()
-        logger.info("[amo] 面板照片任务开始: kind=%s clothes=%s | %s" % (kind, clothes or "-", prompt[:60]))
+        logger.info("[amo] 面板照片任务开始: kind=%s build=%s clothes=%s | %s"
+                    % (kind, data.get("build") or "?", clothes or "-", prompt[:60]))
 
         async def build():
             image = await self._draw_for_panel(prompt)
+            try:
+                self._save_panel_photo(image)
+            except Exception as exc:
+                logger.debug("[amo] 面板照片落盘失败: %s" % exc)
             return {"kind": kind, "prompt": prompt, "image": image}
 
         return {"code": 0, "data": {"job": self._photo_job_start("self_" + kind, build())}}
@@ -14867,6 +14956,23 @@ class HumanCorePlugin(Star):
         job = (getattr(self, "_photo_jobs", {}) or {}).get(job_id)
         if not job:
             return {"code": 1, "msg": "任务不存在（插件可能重载过，重新生成一次）"}
+        # 诊断：前 3 次 + 每 10 次 + 状态一变就记一条，页面被挂起也能看出轮询到哪一步
+        try:
+            polls = getattr(self, "_photo_job_polls", None)
+            if polls is None:
+                polls = {}
+                self._photo_job_polls = polls
+            polls[job_id] = int(polls.get(job_id, 0)) + 1
+            _n = polls[job_id]
+            _st = job.get("status")
+            if _n <= 3 or _n % 10 == 0 or _st != "running":
+                _len = 0
+                if _st == "done":
+                    _len = len(str(((job.get("data") or {}) or {}).get("image") or ""))
+                logger.info("[amo] 照片任务轮询: job=%s 第 %d 次 status=%s image=%d 字符"
+                            % (job_id, _n, _st, _len))
+        except Exception:
+            pass
         return {"code": 0, "data": {
             "id": job_id,
             "status": job.get("status"),
@@ -14874,6 +14980,18 @@ class HumanCorePlugin(Star):
             "msg": job.get("msg") or "",
             "data": job.get("data"),
         }}
+
+    async def api_photo_ack(self):
+        """面板回报浏览器侧结果（诊断用，不落库）。"""
+        try:
+            data = await self._body()
+        except Exception:
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        logger.info("[amo] 面板照片回报: build=%s kind=%s report=%s size=%s img_src=%s"
+                    % (data.get("build") or "?", data.get("kind") or "?",
+                       data.get("report") or "?", data.get("size") or 0, data.get("src")))
+        return {"code": 0, "data": {"ok": True}}
 
     async def api_photo_prompt(self):
         """面板「按提示词生成」：用角色模板画一张，发到最近会话。"""
@@ -15145,7 +15263,19 @@ class HumanCorePlugin(Star):
     async def api_worldview(self):
         await self._ensure_ready()
         await self.state.ensure_worldview(self._last_umo)
-        return {"code": 0, "data": self.state.worldview}
+        world = self.state.worldview
+        try:
+            data = dict(world or {})
+        except Exception:
+            return {"code": 0, "data": world}
+        # 顺手把已保存的面板照片带回去：刷新/重开面板直接就能画上
+        try:
+            photo = self._panel_photo_data_url()
+            if photo:
+                data["panel_photo"] = photo
+        except Exception:
+            pass
+        return {"code": 0, "data": data}
 
     async def api_worldview_regen(self):
         await self._ensure_ready()
