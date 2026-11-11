@@ -14768,6 +14768,7 @@ class HumanCorePlugin(Star):
             try:
                 result = await coro
                 jobs[job_id].update(status="done", data=result)
+                logger.info("[amo] 照片任务完成(%s): %d 字节图片" % (kind, len(str((result or {}).get("image") or ""))))
             except Exception as exc:
                 logger.warning("[amo] 照片任务失败(%s): %s" % (kind, exc))
                 jobs[job_id].update(status="error", msg=str(exc))
@@ -14850,6 +14851,7 @@ class HumanCorePlugin(Star):
             kind = "self"
         clothes = str(data.get("clothes") or "").strip()
         prompt = self._id_photo_prompt(clothes) if kind == "id" else self._selfie_prompt()
+        logger.info("[amo] 面板照片任务开始: kind=%s clothes=%s | %s" % (kind, clothes or "-", prompt[:60]))
 
         async def build():
             image = await self._draw_for_panel(prompt)

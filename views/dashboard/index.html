@@ -292,6 +292,7 @@
     .world-row p { margin: 0; color: var(--text); white-space: pre-wrap; }
     .world-photo { grid-column: 2; grid-row: 1 / span 2; align-self: stretch; justify-self: end;
       height: 100%; aspect-ratio: 5 / 7; width: auto; max-width: 220px;
+      min-width: 84px; min-height: 118px;
       border: 1px solid var(--line); border-radius: 10px; background: var(--card);
       overflow: hidden; cursor: pointer; touch-action: manipulation; }
     .world-photo:hover, .world-photo:focus-visible { border-color: var(--line); outline: none; }
@@ -482,7 +483,6 @@
           </div>
         </div>
         <article id="worldDoc" class="world-doc">加载中…</article>
-        <input id="worldPhotoFile" type="file" accept="image/*" hidden>
       </section>
     </div>
 
@@ -1512,7 +1512,7 @@
       return photo;
     }
 
-    // 单击 = 打开证件照面板（自填衣服）；双击 = 让她拍一张自拍；三击 = 取消/清掉照片。
+    // 单击 = 打开证件照面板（自填衣服）；双击 = 打开二级 UI（照片页）；三击 = 取消/清掉照片。
     // 生成要几十秒，先占位再轮询。
     let worldPhotoTapTimer = null;
     let worldPhotoTapCount = 0;
@@ -1530,11 +1530,11 @@
           worldPhotoTapCount = 0;
           worldPhotoTapTimer = null;
           if (count >= 3) clearWorldPhoto();
-          else if (count === 2) requestWorldPhoto("self");
+          else if (count === 2) openSheet();
           else openIdPhotoDialog();
         }, 420);
       });
-      photo.title = "单击：生成证件照；双击：拍张自拍；三击：取消";
+      photo.title = "单击：生成证件照；双击：打开二级 UI；三击：取消";
     }
 
     function clearWorldPhoto() {
@@ -1566,29 +1566,43 @@
       document.getElementById("idPhotoCancel").addEventListener("click", () => { box.hidden = true; });
       document.getElementById("idPhotoGo").addEventListener("click", async () => {
         const clothes = (document.getElementById("idPhotoClothes").value || "").trim();
-        if (!clothes) {
-          document.getElementById("idPhotoClothes").focus();
-          return;
-        }
         box.hidden = true;
         await requestWorldPhoto("id", clothes);
       });
     }
 
+    // 桥接已经剥掉外层 data，而任务返回体里自己也有一个 data 字段：
+    // 再用 objectFrom() 会连 status 一起剥掉，轮询就永远等不到 done。
+    function jobFrom(res) {
+      let cur = res;
+      for (let i = 0; i < 4; i += 1) {
+        if (!cur || typeof cur !== "object") return {};
+        if (cur.status !== undefined) return cur;
+        if (cur.data && typeof cur.data === "object") { cur = cur.data; continue; }
+        return cur;
+      }
+      return cur && typeof cur === "object" ? cur : {};
+    }
+
     async function pollPhotoJob(jobId, timeoutMs) {
       const started = Date.now();
+      let lastError = "";
       while (Date.now() - started < timeoutMs) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
         let payload = {};
         try {
-          payload = objectFrom(await call("photo/job", { id: jobId })) || {};
+          payload = jobFrom(await call("photo/job", { id: jobId }));
         } catch (error) {
+          const msg = String((error && error.message) || error);
+          // 后端明确说任务丢了（插件重载过）或鉴权失败：立刻报错，别让人干等三分钟
+          if (/任务不存在|未授权|Missing API key|\b40[13]\b/.test(msg)) throw new Error(msg.slice(0, 80));
+          lastError = msg;
           continue;
         }
         if (payload.status === "done") return payload.data || {};
         if (payload.status === "error") throw new Error(payload.msg || "生成失败");
       }
-      throw new Error("生成超时，稍后再试");
+      throw new Error(lastError ? ("生成超时：" + lastError.slice(0, 40)) : "生成超时，稍后再试");
     }
 
     async function requestWorldPhoto(kind, clothes) {
@@ -1608,7 +1622,9 @@
         try { localStorage.setItem(WORLD_PHOTO_KEY, data.image); } catch (error) {}
         photo.dataset.state = "";
       } catch (error) {
-        photo.dataset.state = String((error && error.message) || error).slice(0, 40);
+        const msg = String((error && error.message) || error).slice(0, 60);
+        photo.dataset.state = msg.slice(0, 40);
+        toast("照片生成失败：" + msg, true);
       } finally {
         photo.classList.remove("loading");
         worldPhotoBusy = false;
@@ -2255,56 +2271,9 @@
     }
 
 
-    // 照片单击选图；2 秒内双击进照片页。
-    const worldDoc = document.getElementById("worldDoc");
-    const worldPhotoFile = document.getElementById("worldPhotoFile");
-    if (worldDoc) {
-      worldDoc.addEventListener("click", (event) => {
-        if (!event.target.closest || !event.target.closest("#worldPhoto")) return;
-        if (worldPhotoTimer) {
-          clearTimeout(worldPhotoTimer);
-          worldPhotoTimer = null;
-          openSheet();
-          return;
-        }
-        worldPhotoTimer = setTimeout(() => {
-          worldPhotoTimer = null;
-          if (worldPhotoFile) worldPhotoFile.click();
-        }, 2000);
-      });
-      worldDoc.addEventListener("dblclick", (event) => {
-        if (!event.target.closest || !event.target.closest("#worldPhoto")) return;
-        event.preventDefault();
-        if (worldPhotoTimer) {
-          clearTimeout(worldPhotoTimer);
-          worldPhotoTimer = null;
-        }
-        openSheet();
-      });
-      worldDoc.addEventListener("keydown", (event) => {
-        if (!event.target.closest || !event.target.closest("#worldPhoto")) return;
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          if (worldPhotoFile) worldPhotoFile.click();
-        }
-      });
-    }
-    if (worldPhotoFile) {
-      worldPhotoFile.addEventListener("change", () => {
-        const file = worldPhotoFile.files && worldPhotoFile.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          const src = String(reader.result || "");
-          applyWorldPhoto(src);
-          try { localStorage.setItem(WORLD_PHOTO_KEY, src); } catch (error) {}
-          toast("照片已更新");
-        };
-        reader.onerror = () => toast("照片读取失败", true);
-        reader.readAsDataURL(file);
-        worldPhotoFile.value = "";
-      });
-    }
+    // 照片只保留 7.4.3 的「单击证件照 / 双击自拍 / 三击取消」。
+    // 旧的「单击 2 秒后弹选图 / 双击打开照片页」已移除：
+    // 两套点击逻辑同时挂在 #worldPhoto 上会互相抢事件，而且定时器里的 input.click() 会被浏览器拦掉。
 
     let memoryCandidates = [];
     let profilesCache = [];
