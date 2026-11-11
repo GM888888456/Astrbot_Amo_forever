@@ -12810,7 +12810,6 @@ class HumanCorePlugin(Star):
             ("/photo/sheet", self.api_photo_sheet, ["GET", "POST"]),
             ("/photo/job", self.api_photo_job, ["GET", "POST"]),
             ("/photo/self", self.api_photo_self, ["GET", "POST"]),
-            ("/photo/ack", self.api_photo_ack, ["GET", "POST"]),
             ("/photo/last", self.api_photo_last, ["GET", "POST"]),
             ("/photo/clear", self.api_photo_clear, ["GET", "POST"]),
             ("/photo/persona", self.api_photo_persona, ["GET", "POST"]),
@@ -14910,7 +14909,6 @@ class HumanCorePlugin(Star):
         """面板打开时取回上次那张图（小 JPEG，几十 KB）。"""
         await self._ensure_ready()
         image = self._panel_photo_data_url()
-        logger.info("[amo] 面板照片读取(/photo/last): %d 字符" % len(image))
         return {"code": 0, "data": {"image": image, "bytes": len(image)}}
 
     async def api_photo_clear(self):
@@ -14935,8 +14933,8 @@ class HumanCorePlugin(Star):
             kind = "self"
         clothes = str(data.get("clothes") or "").strip()
         prompt = self._id_photo_prompt(clothes) if kind == "id" else self._selfie_prompt()
-        logger.info("[amo] 面板照片任务开始: kind=%s build=%s clothes=%s | %s"
-                    % (kind, data.get("build") or "?", clothes or "-", prompt[:60]))
+        logger.info("[amo] 面板照片任务开始: kind=%s clothes=%s | %s"
+                    % (kind, clothes or "-", prompt[:60]))
 
         async def build():
             image = await self._draw_for_panel(prompt)
@@ -14956,23 +14954,6 @@ class HumanCorePlugin(Star):
         job = (getattr(self, "_photo_jobs", {}) or {}).get(job_id)
         if not job:
             return {"code": 1, "msg": "任务不存在（插件可能重载过，重新生成一次）"}
-        # 诊断：前 3 次 + 每 10 次 + 状态一变就记一条，页面被挂起也能看出轮询到哪一步
-        try:
-            polls = getattr(self, "_photo_job_polls", None)
-            if polls is None:
-                polls = {}
-                self._photo_job_polls = polls
-            polls[job_id] = int(polls.get(job_id, 0)) + 1
-            _n = polls[job_id]
-            _st = job.get("status")
-            if _n <= 3 or _n % 10 == 0 or _st != "running":
-                _len = 0
-                if _st == "done":
-                    _len = len(str(((job.get("data") or {}) or {}).get("image") or ""))
-                logger.info("[amo] 照片任务轮询: job=%s 第 %d 次 status=%s image=%d 字符"
-                            % (job_id, _n, _st, _len))
-        except Exception:
-            pass
         return {"code": 0, "data": {
             "id": job_id,
             "status": job.get("status"),
@@ -14980,18 +14961,6 @@ class HumanCorePlugin(Star):
             "msg": job.get("msg") or "",
             "data": job.get("data"),
         }}
-
-    async def api_photo_ack(self):
-        """面板回报浏览器侧结果（诊断用，不落库）。"""
-        try:
-            data = await self._body()
-        except Exception:
-            data = {}
-        data = data if isinstance(data, dict) else {}
-        logger.info("[amo] 面板照片回报: build=%s kind=%s report=%s size=%s img_src=%s"
-                    % (data.get("build") or "?", data.get("kind") or "?",
-                       data.get("report") or "?", data.get("size") or 0, data.get("src")))
-        return {"code": 0, "data": {"ok": True}}
 
     async def api_photo_prompt(self):
         """面板「按提示词生成」：用角色模板画一张，发到最近会话。"""
