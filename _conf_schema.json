@@ -1516,6 +1516,12 @@
     "default": 10,
     "hint": "私聊不限量、不冷却；群聊按这个总数共用，防止刷屏。0=不限。"
   },
+  "image_share_private_daily_limit": {
+    "type": "int",
+    "description": "【发图】私聊每天最多几张（0 = 不限）",
+    "default": 0,
+    "hint": "私聊默认完全不限、不冷却；想控制花费用这个软上限，例如填 8。群聊的额度看上面那条（所有群共用）。"
+  },
   "image_share_cooldown_minutes": {
     "type": "int",
     "description": "两次之间至少间隔（分钟）",

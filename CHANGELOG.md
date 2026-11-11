@@ -1,5 +1,10 @@
 # Changelog
 
+## 7.5.3（私聊发图软上限）
+
+- 新增 `image_share_private_daily_limit`（默认 0 = 不限）：私聊仍然不冷却，但想控制花费用这个软上限；
+  计数在 `image_share_private_day`，按自然日重置。群聊额度仍是「所有群共用 10 张 + 180 分钟冷却」。
+
 ## 7.5.2（体验类开关改为默认开）
 
 - `draw_enable`（聊天里自动画图）、`image_share_enable`（主动分享）、`photo_enable`（按日程出图）默认值改为 **true**；

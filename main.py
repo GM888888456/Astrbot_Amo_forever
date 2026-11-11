@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.5.2"
+PLUGIN_VERSION = "7.5.3"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -7051,7 +7051,17 @@ class HumanCorePlugin(Star):
         群聊：冷却（默认 180 分钟）+ 每天上限（默认 10 张），**所有群共用一份额度**。
         """
         if private:
-            return True, 0
+            # 私聊默认不限量；只有显式配了 image_share_private_daily_limit 才计数
+            limit = max(0, self.cfg_int("image_share_private_daily_limit", 0))
+            if not limit:
+                return True, 0
+            day = today_str()
+            try:
+                record = self.db.kv_get("image_share_private_day", {}) or {}
+            except Exception:
+                record = {}
+            used = int(record.get("count", 0)) if record.get("date") == day else 0
+            return used < limit, used
         cooldown = max(0, self.cfg_int("image_share_cooldown_minutes", 180)) * 60
         try:
             last = to_float(self.db.kv_get("image_share_last", 0), 0)
@@ -7175,7 +7185,10 @@ class HumanCorePlugin(Star):
                 self.db.kv_set("image_share_group_day", {"date": today_str(), "count": used + 1})
                 logger.info("[amo] 主动在群里分享了一张图（群聊今日第 %d 张）" % (used + 1))
             else:
-                logger.info("[amo] 私聊主动分享了一张图（私聊不限额、不冷却）")
+                day_record = self.db.kv_get("image_share_private_day", {}) or {}
+                private_used = int(day_record.get("count", 0)) if day_record.get("date") == today_str() else 0
+                self.db.kv_set("image_share_private_day", {"date": today_str(), "count": private_used + 1})
+                logger.info("[amo] 私聊主动分享了一张图（今日第 %d 张）" % (private_used + 1))
             # 让她下一轮知道自己刚发过图，别一问三不知
             self.db.kv_set("image_share_note", {"ts": now_ts(), "text": prefix or ""})
         except asyncio.TimeoutError:
