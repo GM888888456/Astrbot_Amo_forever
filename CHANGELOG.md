@@ -1,5 +1,13 @@
 # Changelog
 
+## 7.5.1（修发图概率没生效 + 打开画图引擎）
+
+- **bug**：7.5.0 新加的 `image_share_prob_*` / `image_share_group_daily_limit` 没写进 `_conf_schema.json`，
+  AstrBot 载入时按 schema 重写配置会把未知键删掉 → 概率恒为 0，一张图都发不出来；
+  这次补进 schema，并在代码里加 `SHARE_PROB_DEFAULTS` 兜底（eat .25 / idle .15 / out .20 / home .10 / other .05）；
+- 旧键 `image_share_probability`、`image_share_daily_limit` 标为已废弃（不再生效）；
+- `draw_enable` 打开（聊天里自动画图 / 拍照请求这条链路可用）；主动发图走的是生图插件的 `draw_for`，两条互相独立。
+
 ## 7.5.0（判断交回心流：语音与发图）
 
 - 心流判分的 JSON 新增两个维度：`voice`（这条回复值不值得用声音说）、`share_photo`（此刻主不适合发照片），

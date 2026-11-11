@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.5.0"
+PLUGIN_VERSION = "7.5.1"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -7025,6 +7025,8 @@ class HumanCorePlugin(Star):
     }
     #: 这些状态下一律不发（睡觉、忙正事）
     SHARE_SKIP_WORDS = ("在睡", "睡觉", "睡了", "午睡", "刚醒", "洗澡", "开会", "上班", "加班", "上课", "考试", "医院")
+    #: 各活动桶的默认概率（配置缺这个键时用，别退化成 0）
+    SHARE_PROB_DEFAULTS = {"eat": 0.25, "idle": 0.15, "out": 0.20, "home": 0.10, "other": 0.05, "sleep": 0.0}
 
     def _share_bucket(self):
         """她现在在干嘛 → 发图的场景桶；睡觉/忙正事返回 sleep（概率 0）。"""
@@ -7115,7 +7117,8 @@ class HumanCorePlugin(Star):
             return None
         # 活动门控：她在吃饭 / 摸鱼 / 出去玩 / 在家才按概率发，睡觉和忙正事不发
         bucket = self._share_bucket()
-        prob = max(0.0, min(1.0, self.cfg_float("image_share_prob_" + bucket, 0.0)))
+        default_prob = self.SHARE_PROB_DEFAULTS.get(bucket, 0.0)
+        prob = max(0.0, min(1.0, self.cfg_float("image_share_prob_" + bucket, default_prob)))
         if prob <= 0:
             return None
         # 心流给的「此刻适不适合发照片」（0~1）当乘数：心流说别发就不发

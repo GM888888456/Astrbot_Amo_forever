@@ -1476,9 +1476,45 @@
   },
   "image_share_probability": {
     "type": "float",
-    "description": "每次触发的概率",
+    "description": "【已废弃】每次触发的概率",
     "default": 0.06,
-    "hint": "每条回复后按这个概率决定要不要发图。0.06≈平均十几条回复才一张；1=每条都发（不建议）。"
+    "hint": "7.5.1 起改成按活动分别配概率（下面几条 image_share_prob_*），这条不再生效。"
+  },
+  "image_share_prob_eat": {
+    "type": "float",
+    "description": "【发图】在吃饭时的概率",
+    "default": 0.25,
+    "hint": "她在吃饭/喝咖啡/点外卖时，每条回复后按这个概率补一张。0=不在这时发。"
+  },
+  "image_share_prob_idle": {
+    "type": "float",
+    "description": "【发图】摸鱼发呆时的概率",
+    "default": 0.15,
+    "hint": "在摸鱼、刷手机、追剧、躺着时用这个概率。"
+  },
+  "image_share_prob_out": {
+    "type": "float",
+    "description": "【发图】出去玩时的概率",
+    "default": 0.2,
+    "hint": "出门、逛街、旅行、在路上时用这个概率。"
+  },
+  "image_share_prob_home": {
+    "type": "float",
+    "description": "【发图】在家时的概率",
+    "default": 0.1,
+    "hint": "在家、在宿舍、在客厅时用这个概率。"
+  },
+  "image_share_prob_other": {
+    "type": "float",
+    "description": "【发图】其他状态的概率",
+    "default": 0.05,
+    "hint": "识别不出具体活动时兜底用。睡觉、洗澡、开会、加班、上课、考试一律不发（概率 0）。"
+  },
+  "image_share_group_daily_limit": {
+    "type": "int",
+    "description": "【发图】群聊每天最多几张（所有群共用）",
+    "default": 10,
+    "hint": "私聊不限量、不冷却；群聊按这个总数共用，防止刷屏。0=不限。"
   },
   "image_share_cooldown_minutes": {
     "type": "int",
@@ -1488,9 +1524,9 @@
   },
   "image_share_daily_limit": {
     "type": "int",
-    "description": "每天最多几张",
+    "description": "【已废弃】每天最多几张",
     "default": 2,
-    "hint": "按自然日算，超过当天不再发；0=不限。"
+    "hint": "改成按来源分开算：私聊不限量，群聊看「群聊每天最多几张（所有群共用）」。"
   },
   "image_share_private_only": {
     "type": "bool",
