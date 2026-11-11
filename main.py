@@ -507,7 +507,7 @@ except Exception:
 
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.4.2"
+PLUGIN_VERSION = "7.4.3"
 
 # 这些开关是面板/主链路的底座：隐藏开关并强制开启，避免误关后整块功能消失。
 FORCED_ON_CONFIG_KEYS = frozenset({
@@ -14785,9 +14785,20 @@ class HumanCorePlugin(Star):
     # ---------- 世界页照片：单击自拍、三击一寸证件照 ----------
 
     ID_PHOTO_PROMPT = (
-        "一寸证件照，正面免冠，纯白背景，白衬衫，端正坐姿，表情自然，"
+        "一寸证件照，正面免冠，纯白背景，端正坐姿，表情自然，"
         "标准证件照构图，光线均匀，高清"
     )
+    # 证件照必须和本人一致：脸、五官、身材都不动，只换衣服
+    ID_PHOTO_CONSISTENCY = "保持同一个人：脸型、五官、眼睛、发型、身材比例完全不变，只更换服装"
+
+    def _id_photo_prompt(self, clothes=""):
+        clothes = str(clothes or "").strip()[:60]
+        parts = [self.ID_PHOTO_PROMPT, self.ID_PHOTO_CONSISTENCY]
+        if clothes:
+            parts.insert(1, "穿着" + clothes)
+        else:
+            parts.insert(1, "白衬衫")
+        return "，".join(parts)
 
     def _selfie_prompt(self):
         """按她此刻的穿搭/地点/在做的事拼自拍提示词。"""
@@ -14837,7 +14848,8 @@ class HumanCorePlugin(Star):
         kind = str(data.get("kind") or "self").strip().lower()
         if kind not in ("self", "id"):
             kind = "self"
-        prompt = self.ID_PHOTO_PROMPT if kind == "id" else self._selfie_prompt()
+        clothes = str(data.get("clothes") or "").strip()
+        prompt = self._id_photo_prompt(clothes) if kind == "id" else self._selfie_prompt()
 
         async def build():
             image = await self._draw_for_panel(prompt)

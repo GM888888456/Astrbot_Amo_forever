@@ -308,6 +308,15 @@
       background: rgba(255,255,255,.82); z-index: 1; }
     .world-photo[data-state=""]::before, .world-photo:not([data-state])::before { content: none; }
     @keyframes worldPhotoSweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+    .id-photo-dialog { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 40; width: min(92vw, 380px); padding: 16px; display: flex; flex-direction: column; gap: 10px;
+      background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+      box-shadow: 0 18px 48px rgba(0,0,0,.18); }
+    .id-photo-dialog[hidden] { display: none; }
+    .id-photo-dialog .ipd-title { font-size: 15px; font-weight: 650; }
+    .id-photo-dialog input { width: 100%; padding: 9px 10px; border: 1px solid var(--line);
+      border-radius: 9px; background: var(--bg); color: var(--text); font-size: 13px; font-family: inherit; }
+    .id-photo-dialog input:focus { outline: none; border-color: var(--pink); }
     .schedule-group > summary { border-bottom: 1px solid var(--line); }
     .sheet { position: fixed; inset: 0; z-index: 30; background: var(--card); }
     .sheet[hidden] { display: none; }
@@ -1503,7 +1512,8 @@
       return photo;
     }
 
-    // 单击 = 让她拍一张自拍；三击 = 生成一寸证件照。生成要几十秒，先占位再轮询。
+    // 单击 = 打开证件照面板（自填衣服）；双击 = 让她拍一张自拍；三击 = 取消/清掉照片。
+    // 生成要几十秒，先占位再轮询。
     let worldPhotoTapTimer = null;
     let worldPhotoTapCount = 0;
     let worldPhotoBusy = false;
@@ -1519,11 +1529,50 @@
           const count = worldPhotoTapCount;
           worldPhotoTapCount = 0;
           worldPhotoTapTimer = null;
-          if (count >= 3) requestWorldPhoto("id");
-          else requestWorldPhoto("self");
-        }, 600);
+          if (count >= 3) clearWorldPhoto();
+          else if (count === 2) requestWorldPhoto("self");
+          else openIdPhotoDialog();
+        }, 420);
       });
-      photo.title = "单击：拍一张自拍；连点三下：一寸证件照";
+      photo.title = "单击：生成证件照；双击：拍张自拍；三击：取消";
+    }
+
+    function clearWorldPhoto() {
+      const photo = document.getElementById("worldPhoto");
+      applyWorldPhoto("");
+      try { localStorage.removeItem(WORLD_PHOTO_KEY); } catch (error) {}
+      if (photo) photo.dataset.state = "已取消";
+      setTimeout(() => { if (photo) photo.dataset.state = ""; }, 1400);
+    }
+
+    function openIdPhotoDialog() {
+      let box = document.getElementById("idPhotoDialog");
+      if (box) {
+        box.hidden = false;
+        const input = document.getElementById("idPhotoClothes");
+        if (input) input.focus();
+        return;
+      }
+      box = document.createElement("div");
+      box.id = "idPhotoDialog";
+      box.className = "id-photo-dialog";
+      box.innerHTML =
+        '<div class="ipd-title">生成一寸证件照</div>' +
+        '<div class="sub">脸、五官、身材不变，只换衣服</div>' +
+        '<input id="idPhotoClothes" placeholder="衣服，例如：白衬衫 / 深色西装 / 藏青针织衫" />' +
+        '<div class="row"><button class="btn" id="idPhotoGo" type="button">生成</button>' +
+        '<button class="link" id="idPhotoCancel" type="button">取消</button></div>';
+      document.body.appendChild(box);
+      document.getElementById("idPhotoCancel").addEventListener("click", () => { box.hidden = true; });
+      document.getElementById("idPhotoGo").addEventListener("click", async () => {
+        const clothes = (document.getElementById("idPhotoClothes").value || "").trim();
+        if (!clothes) {
+          document.getElementById("idPhotoClothes").focus();
+          return;
+        }
+        box.hidden = true;
+        await requestWorldPhoto("id", clothes);
+      });
     }
 
     async function pollPhotoJob(jobId, timeoutMs) {
@@ -1542,15 +1591,15 @@
       throw new Error("生成超时，稍后再试");
     }
 
-    async function requestWorldPhoto(kind) {
+    async function requestWorldPhoto(kind, clothes) {
       const photo = document.getElementById("worldPhoto");
       if (!photo) return;
       worldPhotoBusy = true;
       photo.classList.add("loading");
-      const label = kind === "id" ? "正在生成一寸证件照…" : "正在拍照…";
+      const label = kind === "id" ? "正在生成证件照…" : "正在拍照…";
       photo.dataset.state = label;
       try {
-        const start = objectFrom(await call("photo/self", { kind })) || {};
+        const start = objectFrom(await call("photo/self", { kind, clothes: clothes || "" })) || {};
         const jobId = start.job;
         if (!jobId) throw new Error("后端没返回任务号");
         const data = await pollPhotoJob(jobId, 200000);

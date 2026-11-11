@@ -224,3 +224,17 @@ class GiftAffordancePlaceTests(unittest.TestCase):
         engine = self._engine({"activity": "逛街", "place": "商场", "zone": "mall"})
         hint = engine._affordance_text("手表", "现在几点", 15)
         self.assertIn("表", hint)
+
+
+class IdPhotoPromptTests(unittest.TestCase):
+    def test_prompt_keeps_identity_and_uses_clothes(self):
+        plugin = object.__new__(amo_main.HumanCorePlugin)
+        prompt = plugin._id_photo_prompt("深色西装")
+        self.assertIn("深色西装", prompt)
+        self.assertIn("五官", prompt)
+        self.assertIn("身材", prompt)
+        self.assertIn("证件照", prompt)
+
+    def test_default_shirt_when_empty(self):
+        plugin = object.__new__(amo_main.HumanCorePlugin)
+        self.assertIn("白衬衫", plugin._id_photo_prompt(""))
