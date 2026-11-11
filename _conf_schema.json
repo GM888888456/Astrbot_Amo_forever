@@ -1148,6 +1148,18 @@
     ],
     "hint": "自动=按人格判断（默认女）；泳装只在海边/泳池出现，睡衣不会穿出门。"
   },
+  "chat_digest_enable": {
+    "type": "bool",
+    "description": "半小时聊天摘要",
+    "default": true,
+    "hint": "每半小时读一次私聊，把刚聊的内容补进当前小时的日记；群聊不参与，日程地点/穿搭不会被改。"
+  },
+  "chat_digest_minutes": {
+    "type": "int",
+    "description": "摘要间隔（分钟）",
+    "default": 30,
+    "hint": "至少要隔这么久才看一次，最小 5 分钟。"
+  },
   "schedule_event_prob": {
     "type": "float",
     "description": "突发事件概率",
@@ -1213,6 +1225,18 @@
     "description": "【礼物】允许送车/房这类太贵的",
     "default": false,
     "hint": "默认关：车、房这种她不会收，会劝主人别乱花钱；打开后才会收下并改写日程。手表/首饰/电脑这类贵重小件不受这个开关影响。"
+  },
+  "gift_occasion_enable": {
+    "type": "bool",
+    "description": "节日/生日/旅游要小礼物",
+    "default": true,
+    "hint": "有由头时她一天最多提一次想要个几十块的小东西。"
+  },
+  "gift_birthday": {
+    "type": "string",
+    "description": "她的生日（MM-DD）",
+    "default": "",
+    "hint": "例如 05-20；填了她生日那天会当成由头。留空只用节日和旅游。"
   },
   "gift_capture_wishes": {
     "type": "bool",

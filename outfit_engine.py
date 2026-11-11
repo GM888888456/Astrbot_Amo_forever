@@ -3,6 +3,7 @@
 
 规则很短：
 
+- 优先从服装库挑（他在面板里添的衣服），库是空的才用内置兜底；
 - 按角色性别挑衣服（`outfit_gender`：自动 / 女 / 男，自动时从人格判断）；
 - 按场景挑：睡觉/居家/上班/通勤/出门/运动/正式/海边；
 - 同一段日程+同一天结果固定（crc32），重启不变，不会一小时换三套；
@@ -14,6 +15,8 @@
 
 from __future__ import annotations
 
+import re
+import time
 import zlib
 
 FEMALE_POOLS = {
@@ -109,7 +112,19 @@ class OutfitEngine:
             return "home"
         return "casual"
 
+    def wardrobe(self):
+        return getattr(self.plugin, "wardrobe", None)
+
     def _pool(self, gender, scene):
+        """先看服装库；库空或该场景没衣服，才回落到内置兜底。"""
+        store = self.wardrobe()
+        if store is not None:
+            try:
+                names = store.pool(gender, scene)
+                if names:
+                    return tuple(names)
+            except Exception:
+                pass
         pools = FEMALE_POOLS if gender == "女" else MALE_POOLS
         return pools.get(scene) or pools["casual"]
 
@@ -146,6 +161,70 @@ class OutfitEngine:
         if scenes and all(scene == "home" for scene in scenes):
             return "home"
         return "casual" if scenes else "home"
+
+    # ---------- 手动换装 ----------
+
+    @staticmethod
+    def _override_key(day):
+        return "outfit_override:" + str(day)
+
+    def override(self, day):
+        """他今天让她换的那套：{"name": "...", "from": "18:00"}。"""
+        try:
+            value = self.plugin.db.kv_get(self._override_key(day), {}) or {}
+        except Exception:
+            value = {}
+        if not isinstance(value, dict) or not str(value.get("name") or "").strip():
+            return {}
+        return {"name": str(value.get("name")).strip(),
+                "from": str(value.get("from") or "00:00")[:5],
+                "ts": float(value.get("ts") or 0)}
+
+    def change_outfit(self, day, name, from_hour="", note=""):
+        """他让她换一套：写进今天，从这一小时开始生效，直到睡觉。"""
+        name = str(name or "").strip()[:40]
+        if not name:
+            return {}
+        hour = str(from_hour or time.strftime("%H:00"))[:5]
+        if not re.match(r"^\d{2}:\d{2}$", hour):
+            hour = time.strftime("%H:00")
+        payload = {"name": name, "from": hour, "ts": time.time(), "note": str(note or "")[:80]}
+        try:
+            self.plugin.db.kv_set(self._override_key(day), payload)
+        except Exception:
+            pass
+        return payload
+
+    def clear_override(self, day):
+        try:
+            self.plugin.db.kv_set(self._override_key(day), {})
+        except Exception:
+            pass
+
+    def _apply_override(self, items, day):
+        """把手动换的那套写回日程：从那一小时到睡觉前都穿它。"""
+        data = self.override(day)
+        if not data:
+            return items
+        start = self._minutes(data["from"])
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if self.scene_of(item) == "sleep":
+                if self._minutes(item.get("start")) >= start:
+                    break
+                continue
+            if self._minutes(item.get("start")) >= start:
+                item["outfit"] = data["name"]
+        return items
+
+    @staticmethod
+    def _minutes(text):
+        try:
+            hour, minute = str(text or "").split(":")[:2]
+            return int(hour) * 60 + int(minute)
+        except Exception:
+            return 0
 
     def assign(self, items, day, persona=""):
         """给日程写 `outfit`。
@@ -185,7 +264,7 @@ class OutfitEngine:
                 continue
             outfit = pair if variant == 0 else backup
             item["outfit"] = self._safe(outfit, base_scene) or self._pick(gender, "casual", day, "day")
-        return items
+        return self._apply_override(items, day)
 
     def for_activity(self, activity, day, persona=""):
         """给单条活动算一套（current_activity 兜底、面板试算用）。"""
@@ -193,6 +272,11 @@ class OutfitEngine:
             return ""
         if not self.enabled():
             return str(activity.get("outfit") or "")
+        day = str(day or "")
+        data = self.override(day) if day else {}
+        if data and self._minutes(activity.get("start")) >= self._minutes(data["from"]):
+            if self.scene_of(activity) != "sleep":
+                return data["name"]
         scene = self.scene_of(activity)
         key = "%s|%s" % (activity.get("place") or "", scene)
         outfit = self._safe(self._pick(self.gender(persona), scene, day, key), scene)

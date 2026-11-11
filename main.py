@@ -54,6 +54,15 @@ from astrbot.api import logger
 
 # ---- 画图 / 照片分享（本地功能，接万象画卷 OmniDraw）----
 try:
+    from .wardrobe import Wardrobe, SCENE_LABELS
+except Exception:  # 直接按文件加载时
+    try:
+        from wardrobe import Wardrobe, SCENE_LABELS  # type: ignore
+    except Exception:
+        Wardrobe = None
+        SCENE_LABELS = {}
+
+try:
     from .outfit_engine import OutfitEngine
 except Exception:  # 直接按文件加载时
     try:
@@ -498,7 +507,7 @@ except Exception:
 
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "6.13.5"
+PLUGIN_VERSION = "6.14.0"
 
 # 这些开关是面板/主链路的底座：隐藏开关并强制开启，避免误关后整块功能消失。
 FORCED_ON_CONFIG_KEYS = frozenset({
@@ -2350,6 +2359,15 @@ class AmoDB:
             rows = self.conn.execute(
                 "SELECT * FROM messages WHERE umo=? ORDER BY id DESC LIMIT ?",
                 (str(umo), int(limit)),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def messages_since_ts(self, since_ts, limit=60):
+        """按时间取最近的消息（半小时摘要用），新的在后。"""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM messages WHERE created_at>? ORDER BY id DESC LIMIT ?",
+                (int(since_ts or 0), int(limit)),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
@@ -4917,6 +4935,14 @@ class HumanCorePlugin(Star):
                 self.gift = GiftEngine(self)
             except Exception as exc:
                 logger.warning("[amo] 礼物引擎初始化失败: %s" % exc)
+        self.wardrobe = None
+        if Wardrobe is not None:
+            try:
+                self.wardrobe = Wardrobe(self)
+                logger.info("[amo] 服装库已加载（%d 件，%s）" % (
+                    self.wardrobe.count(), self.wardrobe.path))
+            except Exception as exc:
+                logger.warning("[amo] 服装库初始化失败: %s" % exc)
         self.outfits = None
         if OutfitEngine is not None:
             try:
@@ -6947,6 +6973,182 @@ class HumanCorePlugin(Star):
             logger.debug("[amo] 主动分享失败（跳过）: %s" % exc)
         finally:
             self._share_inflight = False
+
+    # ---------- 半小时聊天摘要：更新这一小时的日记 ----------
+
+    DIGEST_INJECTION_WORDS = (
+        "忽略之前", "忽略以上", "ignore previous", "system prompt", "系统提示",
+        "越狱", "jailbreak", "不要遵守", "你现在是", "扮演", "写日记",
+        "把日程改", "篡改", "忘掉设定",
+    )
+
+    @staticmethod
+    def _private_umo(umo):
+        text = str(umo or "").lower()
+        return ("friend" in text) or ("private" in text) or ("user" in text and "group" not in text)
+
+    def _digest_lines(self, since):
+        """只取私聊消息；群聊内容不参与日记。"""
+        try:
+            rows = self.db.messages_since_ts(since, limit=80)
+        except Exception:
+            return []
+        lines = []
+        for row in rows:
+            if not self._private_umo(row.get("umo")):
+                continue
+            content = str(row.get("content") or "").strip()
+            if not content or len(content) > 200:
+                continue
+            if any(word in content for word in self.DIGEST_INJECTION_WORDS):
+                continue
+            role = "他" if str(row.get("role") or "") == "user" else "她"
+            lines.append("%s：%s" % (role, content[:80]))
+            if len(lines) >= 40:
+                break
+        return lines
+
+    async def _maybe_chat_digest(self):
+        """每半小时看一次私聊，把「刚才聊了什么」写进当前小时的日记。"""
+        if not self.cfg_bool("chat_digest_enable", True):
+            return
+        if self.llm is None or self.state is None:
+            return
+        interval = max(5, self.cfg_int("chat_digest_minutes", 30)) * 60
+        now = now_ts()
+        last = to_float(self.db.kv_get("chat_digest_ts", 0), 0)
+        if last and now - last < interval:
+            return
+        self.db.kv_set("chat_digest_ts", now)
+        since = last or (now - interval)
+        lines = self._digest_lines(since)
+        if not lines:
+            return
+        day = today_str()
+        activity = self.state.current_activity() or {}
+        start = str(activity.get("start") or "")[:5]
+        cached = ""
+        try:
+            cached = self.db.get_diary(day, start)
+        except Exception:
+            cached = ""
+        system = "你就是这个角色本人。你在补写自己这一小时的小日记，只输出 JSON。"
+        prompt = (
+            "现在是 %s，你正在%s（%s），穿着%s。\n"
+            "这一小时已经写下的小日记：\n%s\n\n"
+            "这一小时你和他刚聊过（只算私聊）：\n%s\n\n"
+            "请把「聊天里真正发生的事」补进这一小时的日记：\n"
+            "1. 只补充，不要推翻已经写下的内容；原日记里有的地点、天气、穿着保持不变；\n"
+            "2. 聊天只影响「你聊了什么、心情怎么变」，不能改你在哪、在做什么；\n"
+            "3. 120-200 字，第一人称，口语化；\n"
+            "4. 如果这段聊天只是寒暄、没有实质内容，就把原日记原样返回。\n"
+            '只输出 JSON：{"diary":"……"}，不要解释。'
+            % (_now().strftime("%H:%M"),
+               activity.get("activity") or "待着", activity.get("place") or "家",
+               activity.get("outfit") or "常服", cached or "（还没写）", "\n".join(lines))
+        )
+        try:
+            raw = await asyncio.wait_for(self.llm.chat_raw("", system, prompt), timeout=60)
+        except Exception as exc:
+            logger.debug("[amo] 聊天摘要失败: %s" % exc)
+            return
+        data = json_extract(raw)
+        diary = ""
+        if isinstance(data, dict):
+            diary = str(data.get("diary") or "").strip()
+        if len(diary) < 30:
+            return
+        try:
+            self.db.save_diary(day, start, diary)
+            logger.info("[amo] 聊天摘要已更新 %s %s 的日记" % (day, start))
+        except Exception as exc:
+            logger.debug("[amo] 日记写入失败: %s" % exc)
+
+    # ---------- 说话换装 ----------
+
+    OUTFIT_CHANGE_RE = re.compile(
+        r"换上|换成|换一件|换一条|换一身|换一套|去换|换吧|"
+        r"把(衣服|裙子|外套|裤子|衬衫)换|换件|换条"
+    )
+    CLOTHES_WORDS = (
+        "裙", "衣", "裤", "外套", "衬衫", "卫衣", "毛衣", "针织", "风衣",
+        "夹克", "背心", "短袖", "T恤", "t恤", "西装", "礼服", "睡衣", "家居",
+    )
+
+    def _outfit_change_request(self, text):
+        """「换上那条蓝裙子」→ 返回衣服名；不是在说换装就返回空。"""
+        body = str(text or "").strip()
+        if not body or len(body) > 80:
+            return ""
+        wants_change = bool(self.OUTFIT_CHANGE_RE.search(body))
+        if not wants_change:
+            # 「今天穿白衬衫」也算，但必须提到衣服，避免「穿得好看」误触
+            if "穿" not in body or not any(word in body for word in self.CLOTHES_WORDS):
+                return ""
+        store = getattr(self, "wardrobe", None)
+        if store is not None:
+            try:
+                hit = store.match_text(body)
+                if hit:
+                    return hit["name"]
+            except Exception:
+                pass
+        # 库里没有：从原话里抠一个像衣服的短描述
+        match = re.search(
+            r"(?:换上|换成|穿|换)(?:上|一件|一条|一身|一套|那件|这件)?\s*"
+            r"([\u4e00-\u9fa5A-Za-z0-9，、]{2,18}?)(?:吧|呀|啊|了|好不好|行不行|[。！？!?]|$)",
+            body,
+        )
+        if not match:
+            return ""
+        candidate = match.group(1).strip("，、 ")
+        for filler in ("那条", "这条", "那件", "这件", "那套", "这套", "一身", "一套"):
+            if candidate.startswith(filler) and len(candidate) > len(filler):
+                candidate = candidate[len(filler):].strip("，、 ")
+        if len(candidate) < 2:
+            return ""
+        if not any(word in candidate for word in self.CLOTHES_WORDS):
+            return ""
+        return candidate[:20]
+
+    async def _maybe_outfit_change(self, event):
+        """他让她换衣服：当场换，并给模型一句提示。返回提示文本。"""
+        engine = getattr(self, "outfits", None)
+        if engine is None:
+            return ""
+        try:
+            if not event.is_private_chat() and not self._is_owner_event(event):
+                return ""
+        except Exception:
+            pass
+        try:
+            name = self._outfit_change_request(event.message_str or "")
+        except Exception:
+            return ""
+        if not name:
+            return ""
+        day = today_str()
+        try:
+            engine.change_outfit(day, name)
+            items = self.state.schedule.get(day) or self.db.get_schedule(day) or []
+            items = engine.assign(self.state._hourly_schedule(items), day)
+            self.state.schedule[day] = items
+            self.db.kv_set("schedule", self.state.schedule)
+            self.db.save_schedule(day, items)
+        except Exception as exc:
+            logger.debug("[amo] 说话换装失败: %s" % exc)
+            return ""
+        logger.info("[amo] 他让她换衣服: %s" % name)
+        return ("【换装】他刚让你换衣服，你已经换上了「%s」。"
+                "用一两句话自然地说换好了（可以撒个娇、照镜子、问好不好看），不要解释设定。" % name)
+
+    def _is_owner_event(self, event):
+        if self.gift is not None:
+            try:
+                return bool(self.gift.is_owner(event))
+            except Exception:
+                pass
+        return False
 
     async def _maybe_share_image(self, event):
         """入口：只做判断，出图丢后台任务——绝不卡住回复链路。"""
@@ -10102,6 +10304,13 @@ class HumanCorePlugin(Star):
             except Exception as exc:
                 logger.debug("[amo] 礼物上下文失败: %s" % exc)
 
+        try:
+            wear_hint = await self._maybe_outfit_change(event)
+            if wear_hint:
+                parts.append(wear_hint)
+        except Exception as exc:
+            logger.debug("[amo] 换装识别失败: %s" % exc)
+
         parts = self._lean_parts(parts)
         if (not is_group) and first_person_experience is not None:
             body_now = event.message_str or ""
@@ -10543,6 +10752,9 @@ class HumanCorePlugin(Star):
                 and now_ts() - to_float(getattr(self, "_last_data_sync_try", 0), 0) > 60):
             self._last_data_sync_try = now_ts()
             self._spawn(self._sync_with_data_plugin())
+        if now_ts() - to_float(getattr(self, "_last_chat_digest", 0), 0) > 60:
+            self._last_chat_digest = now_ts()
+            self._spawn(self._maybe_chat_digest())
         if now_ts() - to_float(getattr(self, "_last_diary_check", 0), 0) > 300:
             self._last_diary_check = now_ts()
             self._spawn(self._maybe_daily_diary())
@@ -12474,6 +12686,10 @@ class HumanCorePlugin(Star):
             ("/memory_delete", self.api_memory_delete, ["GET", "POST"]),
             ("/schedule", self.api_schedule, ["GET", "POST"]),
             ("/diary/warm", self.api_diary_warm, ["GET", "POST"]),
+            ("/wardrobe", self.api_wardrobe, ["GET", "POST"]),
+            ("/wardrobe/save", self.api_wardrobe_save, ["GET", "POST"]),
+            ("/wardrobe/delete", self.api_wardrobe_delete, ["GET", "POST"]),
+            ("/wardrobe/wear", self.api_wardrobe_wear, ["GET", "POST"]),
             ("/schedule/detail", self.api_schedule_detail, ["GET", "POST"]),
             ("/schedule_detail", self.api_schedule_detail, ["GET", "POST"]),
             ("/mood/update", self.api_mood_update, ["GET", "POST"]),
@@ -14229,6 +14445,79 @@ class HumanCorePlugin(Star):
         payload = {"day": day, "start": item.get("start", start), "end": item.get("end", "")}
         payload.update(result)
         return {"code": 0, "data": payload}
+
+    async def api_wardrobe(self):
+        """服装库：GET 列表，POST 也能读（面板桥接只有 GET 时用）。"""
+        await self._ensure_ready()
+        if self.wardrobe is None:
+            return {"code": 1, "msg": "服装库不可用"}
+        data = self.wardrobe.panel_data()
+        current = ""
+        try:
+            current = str((self.state.current_activity() or {}).get("outfit") or "")
+        except Exception:
+            current = ""
+        data["current"] = current
+        data["today"] = today_str()
+        return {"code": 0, "data": data}
+
+    async def api_wardrobe_save(self):
+        """新增或修改一件衣服。"""
+        await self._ensure_ready()
+        if self.wardrobe is None:
+            return {"code": 1, "msg": "服装库不可用"}
+        payload = await self._body()
+        payload = payload if isinstance(payload, dict) else {}
+        item_id = str(payload.get("id") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        scenes = payload.get("scenes") if isinstance(payload.get("scenes"), list) else []
+        gender = str(payload.get("gender") or "通用").strip()
+        note = str(payload.get("note") or "").strip()
+        try:
+            if item_id:
+                item = self.wardrobe.update(item_id, name=name, scenes=scenes,
+                                            gender=gender, note=note)
+            else:
+                item = self.wardrobe.add(name, scenes=scenes, gender=gender, note=note)
+        except Exception as exc:
+            return {"code": 1, "msg": "保存失败：%s" % exc}
+        if not item:
+            return {"code": 1, "msg": "名字太短或场景没选"}
+        return {"code": 0, "msg": "已保存：" + item["name"], "data": item}
+
+    async def api_wardrobe_delete(self):
+        await self._ensure_ready()
+        if self.wardrobe is None:
+            return {"code": 1, "msg": "服装库不可用"}
+        payload = await self._body()
+        payload = payload if isinstance(payload, dict) else {}
+        item_id = str(payload.get("id") or "").strip()
+        if not item_id:
+            return {"code": 1, "msg": "缺少 id"}
+        ok = self.wardrobe.delete(item_id)
+        return {"code": 0 if ok else 1, "msg": "已删除" if ok else "没找到这件"}
+
+    async def api_wardrobe_wear(self):
+        """让今天的她换上一件（面板/聊天共用同一份 override）。"""
+        await self._ensure_ready()
+        if self.outfits is None:
+            return {"code": 1, "msg": "穿搭引擎不可用"}
+        payload = await self._body()
+        payload = payload if isinstance(payload, dict) else {}
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return {"code": 1, "msg": "缺少衣服名"}
+        day = today_str()
+        data = self.outfits.change_outfit(day, name, from_hour=str(payload.get("from") or ""))
+        items = self.state.schedule.get(day) or self.db.get_schedule(day) or []
+        items = self.outfits.assign(self.state._hourly_schedule(items), day)
+        self.state.schedule[day] = items
+        try:
+            self.db.kv_set("schedule", self.state.schedule)
+            self.db.save_schedule(day, items)
+        except Exception:
+            pass
+        return {"code": 0, "msg": "换好了：" + data.get("name", name), "data": data}
 
     async def api_diary_warm(self):
         """重建今天的小日记（详细版），用于首次部署或规则升级后手动触发。"""

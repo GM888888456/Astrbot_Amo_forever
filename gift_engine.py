@@ -349,6 +349,17 @@ WISH_HINT = (
     "【你最近想要的东西】{items}。\n"
     "他问起就挑一两个说，别像报清单；他没问就别主动要。"
 )
+OCCASION_HINT = (
+    "【今天是个由头】今天是{label}。\n"
+    "可以自然地跟他提一句想要个小东西（挂件、发绳、口红、小手链这种几十块的小物件），"
+    "语气是撒娇分享、不是索取；说的是「喜欢」不是「你买给我」，"
+    "一句话带过就够，别列清单，别提车房这种大件。他要是没接话就翻篇。"
+)
+# 节日/生日/旅游时她会惦记的小东西：都是几十块以内
+SWEET_SMALL_GIFTS = (
+    "一个小挂件", "一条发绳", "一支口红", "一条手链", "一个毛绒玩偶",
+    "一枚胸针", "一本小笔记本", "一个马克杯", "一束小雏菊", "一张明信片",
+)
 ASSET_HINT = (
     "【他送的大件】{items}。\n"
     "这些都是他主动送的，你不会开口要；平时开着/住着/戴着就行，聊到再自然提一句。"
@@ -761,10 +772,17 @@ class GiftEngine:
                     wish["raw"] = (raw or wish.get("raw") or "")[:200]
                     self._save()
                     return dict(wish)
+            occasion = ""
+            try:
+                occasion = str((self.occasion_now() or {}).get("label") or "")
+            except Exception:
+                occasion = ""
             wish = {
                 "id": "w" + uuid.uuid4().hex[:10],
                 "ts": now,
                 "item": item,
+                "reason": (raw or item)[:120],
+                "occasion": occasion,
                 "raw": (raw or "")[:200],
                 "umo": umo or "",
                 "uid": uid or "",
@@ -870,6 +888,8 @@ class GiftEngine:
                 "ts": now,
                 "item": item,
                 "kind": kind,
+                "reason": (raw or "")[:120],
+                "occasion": str((self.occasion_now() or {}).get("label") or ""),
                 "raw": (raw or "")[:300],
                 "place": place or "",
                 "umo": umo or "",
@@ -993,10 +1013,159 @@ class GiftEngine:
             _add(self._affordance_hint(text))
         except Exception as exc:
             logger.debug("[amo] 礼物具现化提示失败: %s" % exc)
+        try:
+            proven = self.gift_provenance(text)
+            if proven:
+                _add(proven)
+        except Exception as exc:
+            logger.debug("[amo] 礼物来历检索失败: %s" % exc)
+        try:
+            self._maybe_occasion_hint(umo, parts)
+        except Exception as exc:
+            logger.debug("[amo] 节日心愿提示失败: %s" % exc)
         joined = "\n\n".join(parts)
         if len(joined) > 600:
             joined = joined[:600].rstrip() + "…"
         return joined
+
+    # ---------- 节日 / 生日 / 旅游：要一件小礼物 ----------
+
+    OCCASION_LABELS = {
+        "holiday": "节日",
+        "birthday": "生日",
+        "travel": "出门旅游",
+    }
+
+    def _meta(self, day=None):
+        """拿节假日元数据；拿不到就当普通日子。"""
+        try:
+            from .main import day_meta
+        except Exception:
+            try:
+                from main import day_meta  # type: ignore
+            except Exception:
+                return {}
+        try:
+            return day_meta(day) or {}
+        except Exception:
+            return {}
+
+    def _activity(self):
+        try:
+            return self.plugin.state.current_activity() or {}
+        except Exception:
+            return {}
+
+    def _birthday_today(self):
+        """今天是不是生日：她自己的（配置）或他的（画像）。"""
+        today = time.strftime("%m-%d")
+        own = str(self._str("gift_birthday", "") or "").strip()
+        if own and own[-5:] == today:
+            return "她的生日"
+        try:
+            for profile in self.plugin.db.list_profiles(limit=20):
+                value = str(profile.get("birthday") or "").strip()
+                if value and value[-5:] == today:
+                    return "他的生日"
+        except Exception:
+            pass
+        return ""
+
+    def _is_travel(self):
+        activity = self._activity()
+        text = str(activity.get("activity") or "") + "|" + str(activity.get("place") or "")
+        zone = str(activity.get("zone") or "")
+        return zone in ("scenic", "travel") or any(
+            word in text for word in ("旅", "景点", "古镇", "海边", "景区", "出差", "高铁", "机场"))
+
+    def occasion_now(self):
+        """今天有什么由头。返回 {kind, label} 或 {}。"""
+        birthday = self._birthday_today()
+        if birthday:
+            return {"kind": "birthday", "label": birthday}
+        meta = self._meta()
+        holiday = str(meta.get("holiday") or "").strip()
+        if holiday:
+            return {"kind": "holiday", "label": holiday}
+        if self._is_travel():
+            return {"kind": "travel", "label": "出门旅游"}
+        return {}
+
+    def _occasion_state(self):
+        with self._lock:
+            meta = self._load().setdefault("meta", {})
+            state = meta.get("occasion")
+            if not isinstance(state, dict):
+                state = {}
+                meta["occasion"] = state
+            return meta, state
+
+    def _maybe_occasion_hint(self, umo, parts):
+        """节日/生日/旅游时，**每天最多一次**提一句想要点小东西。"""
+        if not self._bool("gift_occasion_enable", True):
+            return
+        occasion = self.occasion_now()
+        if not occasion:
+            return
+        try:
+            if self.recent_wishes(limit=1):
+                return
+        except Exception:
+            return
+        day = time.strftime("%Y-%m-%d")
+        with self._lock:
+            meta, state = self._occasion_state()
+            record = state.get(day) if isinstance(state.get(day), dict) else {}
+            if record.get("kind") == occasion["kind"]:
+                return
+            state[day] = {"kind": occasion["kind"], "ts": time.time()}
+            self._save()
+        parts.append(OCCASION_HINT.format(label=occasion["label"]))
+
+    def want_for_occasion(self):
+        """给面板/命令用：当前由头 + 建议的小物件。"""
+        occasion = self.occasion_now()
+        if not occasion:
+            return {}
+        picks = SWEET_SMALL_GIFTS
+        seed = int(time.strftime("%j")) + len(occasion["kind"])
+        suggestion = picks[seed % len(picks)]
+        return {"kind": occasion["kind"], "label": occasion["label"],
+                "suggest": suggestion}
+
+    # ---------- 提及礼物时，检索当时的数据 ----------
+
+    def gift_provenance(self, text):
+        """他说到某件礼物 → 把当时怎么来的、为什么送带出来。"""
+        body = str(text or "")
+        if not body:
+            return ""
+        now = time.time()
+        best = {}
+        for gift in self.recent_gifts(limit=40):
+            name = str(gift.get("item") or "")
+            if not name:
+                continue
+            core = name[1:] if name.startswith("小") and len(name) > 1 else name
+            if name in body or (len(core) >= 2 and core in body):
+                best = gift
+                break
+        if not best:
+            return ""
+        days = int(max(0, (now - float(best.get("ts") or 0)) // 86400))
+        when = "今天" if days <= 0 else ("昨天" if days == 1 else "%d 天前" % days)
+        where = str(best.get("place") or "").strip()
+        reason = str(best.get("reason") or "").strip()
+        occasion = str(best.get("occasion") or "").strip()
+        parts = ["【这件东西是怎么来的】%s 是%s%s送的" % (
+            best.get("item"), when, ("，在" + where) if where else "")]
+        if occasion:
+            parts.append("，那天是" + occasion)
+        parts.append("。")
+        if reason:
+            parts.append("当时的原因：%s。" % reason[:80])
+        parts.append("他主动提及时可以自然带一句这段来历，别背课文、别每句都提。")
+        return "".join(parts)
 
     def _maybe_shop_hint(self, umo, parts):
         """逛街时**偶尔**才提醒一句：不是每次逛街都有看中的东西。

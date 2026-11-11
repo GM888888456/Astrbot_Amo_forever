@@ -1,0 +1,270 @@
+# -*- coding: utf-8 -*-
+"""服装库：他自己给她添的衣服。
+
+日程配装不再随机，而是从这份库里按场景挑；库是空的才回落到内置兜底。
+
+数据存在插件数据目录的 ``wardrobe.json``（和 ``gifts.json`` 同级），
+每条：id / name / scenes / gender / enabled / note / created。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import threading
+import time
+import uuid
+import zlib
+
+# 场景标签：和 outfit_engine 的 scene 一一对应
+SCENES = ("work", "home", "casual", "out", "formal", "sport", "sleep", "beach")
+
+SCENE_LABELS = {
+    "work": "上班",
+    "home": "在家",
+    "casual": "日常",
+    "out": "出门",
+    "formal": "正式",
+    "sport": "运动",
+    "sleep": "睡觉",
+    "beach": "海边",
+}
+
+# 没有显式标签时按名字猜场景；猜不到就进「日常 + 出门」
+SCENE_HINTS = (
+    (("睡衣", "睡裙", "家居", "居家", "棉拖"), ("sleep", "home")),
+    (("泳", "比基尼"), ("beach",)),
+    (("西装", "礼服", "套装", "衬衫配", "正装"), ("work", "formal")),
+    (("运动", "速干", "跑鞋", "瑜伽", "健身"), ("sport",)),
+    (("卫衣", "牛仔裤", "t恤", "T 恤", "外套", "针织", "毛衣", "开衫", "风衣", "夹克"),
+     ("casual", "out")),
+    (("连衣裙", "半身裙", "裙", "短裤", "阔腿裤"), ("casual", "out")),
+)
+
+MIN_NAME = 2
+MAX_NAME = 40
+MAX_ITEMS = 200
+
+
+def clean_name(text):
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    value = value.strip("，,。.；;：:、!！?？\"'“”‘’")
+    return value[:MAX_NAME]
+
+
+def guess_scenes(name):
+    lowered = str(name or "").lower()
+    for words, scenes in SCENE_HINTS:
+        if any(word in lowered for word in words):
+            return list(scenes)
+    return ["casual", "out"]
+
+
+class Wardrobe:
+    def __init__(self, plugin):
+        self.plugin = plugin
+        self._lock = threading.RLock()
+        self._data = None
+        base = ""
+        try:
+            base = os.path.dirname(str(getattr(plugin.db, "path", "") or ""))
+        except Exception:
+            base = ""
+        if not base:
+            base = str(getattr(plugin, "plugin_dir", "") or ".")
+        self.path = os.path.join(base, "wardrobe.json")
+
+    # ---------- 存储 ----------
+
+    def _load(self):
+        if self._data is not None:
+            return self._data
+        data = {"items": []}
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+            if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+                data = raw
+            elif isinstance(raw, list):
+                data = {"items": raw}
+        except Exception:
+            data = {"items": []}
+        items = []
+        for item in data.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            name = clean_name(item.get("name"))
+            if not name:
+                continue
+            scenes = [scene for scene in (item.get("scenes") or []) if scene in SCENES]
+            items.append({
+                "id": str(item.get("id") or ("w" + uuid.uuid4().hex[:10])),
+                "name": name,
+                "scenes": scenes or guess_scenes(name),
+                "gender": str(item.get("gender") or "通用"),
+                "enabled": bool(item.get("enabled", True)),
+                "note": str(item.get("note") or "")[:120],
+                "created": float(item.get("created") or time.time()),
+            })
+        data["items"] = items[-MAX_ITEMS:]
+        self._data = data
+        return data
+
+    def _save(self):
+        data = self._data or {"items": []}
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.path)
+        except Exception as exc:
+            try:
+                self.plugin.logger.debug("[amo] 服装库落盘失败: %s" % exc)
+            except Exception:
+                pass
+
+    # ---------- 读写 ----------
+
+    def items(self, only_enabled=False):
+        with self._lock:
+            items = [dict(item) for item in self._load()["items"]]
+        if only_enabled:
+            items = [item for item in items if item.get("enabled", True)]
+        return items
+
+    def count(self):
+        return len(self.items(only_enabled=True))
+
+    def find(self, name):
+        target = clean_name(name)
+        if not target:
+            return {}
+        for item in self.items():
+            if item["name"] == target:
+                return item
+        return {}
+
+    def add(self, name, scenes=None, gender="通用", note=""):
+        name = clean_name(name)
+        if len(name) < MIN_NAME:
+            return {}
+        scenes = [scene for scene in (scenes or []) if scene in SCENES]
+        with self._lock:
+            data = self._load()
+            for item in data["items"]:
+                if item["name"] == name:
+                    # 同名直接更新，避免库被同名刷爆
+                    if scenes:
+                        item["scenes"] = scenes
+                    if gender in ("女", "男", "通用"):
+                        item["gender"] = gender
+                    if note:
+                        item["note"] = str(note)[:120]
+                    item["enabled"] = True
+                    self._save()
+                    return dict(item)
+            item = {
+                "id": "w" + uuid.uuid4().hex[:10],
+                "name": name,
+                "scenes": scenes or guess_scenes(name),
+                "gender": gender if gender in ("女", "男", "通用") else "通用",
+                "enabled": True,
+                "note": str(note or "")[:120],
+                "created": time.time(),
+            }
+            data["items"].append(item)
+            data["items"] = data["items"][-MAX_ITEMS:]
+            self._save()
+            return dict(item)
+
+    def update(self, item_id, **fields):
+        with self._lock:
+            data = self._load()
+            for item in data["items"]:
+                if item["id"] != str(item_id):
+                    continue
+                if "name" in fields:
+                    name = clean_name(fields["name"])
+                    if len(name) >= MIN_NAME:
+                        item["name"] = name
+                if "scenes" in fields:
+                    scenes = [scene for scene in (fields["scenes"] or []) if scene in SCENES]
+                    if scenes:
+                        item["scenes"] = scenes
+                if "gender" in fields and fields["gender"] in ("女", "男", "通用"):
+                    item["gender"] = fields["gender"]
+                if "enabled" in fields:
+                    item["enabled"] = bool(fields["enabled"])
+                if "note" in fields:
+                    item["note"] = str(fields["note"] or "")[:120]
+                self._save()
+                return dict(item)
+        return {}
+
+    def delete(self, item_id):
+        with self._lock:
+            data = self._load()
+            before = len(data["items"])
+            data["items"] = [item for item in data["items"] if item["id"] != str(item_id)]
+            if len(data["items"]) == before:
+                return False
+            self._save()
+            return True
+
+    def clear(self):
+        with self._lock:
+            self._data = {"items": []}
+            self._save()
+
+    # ---------- 挑选 ----------
+
+    def pool(self, gender, scene):
+        """这一场景能穿的衣服；性别不符的跳过（通用都算）。"""
+        out = []
+        for item in self.items(only_enabled=True):
+            if item.get("gender") in ("女", "男") and gender in ("女", "男") and item["gender"] != gender:
+                continue
+            scenes = item.get("scenes") or []
+            if scene and scene not in scenes:
+                continue
+            out.append(item["name"])
+        return out
+
+    def pick(self, gender, scene, day, key=""):
+        """同一天同一场景固定一套，重启也不变。"""
+        pool = self.pool(gender, scene)
+        if not pool:
+            return ""
+        seed = ("%s|%s|%s" % (day, scene, key)).encode("utf-8")
+        return pool[zlib.crc32(seed) % len(pool)]
+
+    def match_text(self, text):
+        """从一句话里认出「哪件衣服」；库里有才算。"""
+        body = str(text or "")
+        if not body:
+            return {}
+        hits = []
+        for item in self.items(only_enabled=True):
+            name = item["name"]
+            if name and name in body:
+                hits.append(item)
+                continue
+            # 「那条红裙子」：按名字里的关键词松匹配
+            tokens = [token for token in re.split(r"[，,、\s]+", name) if len(token) >= 2]
+            if any(token in body for token in tokens):
+                hits.append(item)
+        if not hits:
+            return {}
+        hits.sort(key=lambda item: len(item["name"]), reverse=True)
+        return hits[0]
+
+    def panel_data(self):
+        items = self.items()
+        return {
+            "path": self.path,
+            "count": len([item for item in items if item.get("enabled", True)]),
+            "items": items,
+            "scenes": [{"key": key, "label": SCENE_LABELS[key]} for key in SCENES],
+        }
