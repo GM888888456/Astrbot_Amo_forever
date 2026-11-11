@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.4.8"
+PLUGIN_VERSION = "7.5.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -7016,8 +7016,40 @@ class HumanCorePlugin(Star):
         text = re.sub(r"[，,]{2,}", "，", text).strip("，, ")
         return text or "自拍，日常光线，看向镜头"
 
-    def _image_share_quota(self, now):
-        """返回 (能不能发, 今天已发张数)。冷却按分钟、日限按自然日，都存在 kv 里。"""
+    #: 活动 → 发图概率桶（对应配置 image_share_prob_<桶>）
+    SHARE_BUCKET_WORDS = {
+        "eat": ("吃", "饭", "午餐", "晚餐", "早餐", "外卖", "食堂", "咖啡", "奶茶", "零食", "做饭"),
+        "idle": ("摸鱼", "划水", "发呆", "无所事事", "刷手机", "躺", "追剧", "看剧"),
+        "out": ("出去玩", "出门", "出去", "逛街", "公园", "旅行", "景点", "看电影", "在路上", "地铁", "公交", "通勤"),
+        "home": ("在家", "家里", "宿舍", "房间", "客厅", "沙发"),
+    }
+    #: 这些状态下一律不发（睡觉、忙正事）
+    SHARE_SKIP_WORDS = ("在睡", "睡觉", "睡了", "午睡", "刚醒", "洗澡", "开会", "上班", "加班", "上课", "考试", "医院")
+
+    def _share_bucket(self):
+        """她现在在干嘛 → 发图的场景桶；睡觉/忙正事返回 sleep（概率 0）。"""
+        try:
+            activity = self.state.current_activity() or {}
+        except Exception:
+            activity = {}
+        values = activity.values() if isinstance(activity, dict) else [activity]
+        blob = " ".join(str(v) for v in values if isinstance(v, (str, int, float)))
+        for word in self.SHARE_SKIP_WORDS:
+            if word in blob:
+                return "sleep"
+        for bucket, words in self.SHARE_BUCKET_WORDS.items():
+            if any(word in blob for word in words):
+                return bucket
+        return "other"
+
+    def _image_share_quota(self, now, private=True):
+        """返回 (能不能发, 今天已发张数)。
+
+        私聊：用户自己承担额度 → 不冷却、不限量。
+        群聊：冷却（默认 180 分钟）+ 每天上限（默认 10 张），**所有群共用一份额度**。
+        """
+        if private:
+            return True, 0
         cooldown = max(0, self.cfg_int("image_share_cooldown_minutes", 180)) * 60
         try:
             last = to_float(self.db.kv_get("image_share_last", 0), 0)
@@ -7027,11 +7059,11 @@ class HumanCorePlugin(Star):
             return False, 0
         day = today_str()
         try:
-            record = self.db.kv_get("image_share_day", {}) or {}
+            record = self.db.kv_get("image_share_group_day", {}) or {}
         except Exception:
             record = {}
         used = int(record.get("count", 0)) if record.get("date") == day else 0
-        limit = max(0, self.cfg_int("image_share_daily_limit", 2))
+        limit = max(0, self.cfg_int("image_share_group_daily_limit", 10))
         if limit and used >= limit:
             return False, used
         return True, used
@@ -7078,13 +7110,24 @@ class HumanCorePlugin(Star):
             return None
         if event is None:
             return None
-        if self.cfg_bool("image_share_private_only", True) and not event.is_private_chat():
+        private = bool(event.is_private_chat())
+        if self.cfg_bool("image_share_private_only", True) and not private:
             return None
-        prob = max(0.0, min(1.0, self.cfg_float("image_share_probability", 0.06)))
+        # 活动门控：她在吃饭 / 摸鱼 / 出去玩 / 在家才按概率发，睡觉和忙正事不发
+        bucket = self._share_bucket()
+        prob = max(0.0, min(1.0, self.cfg_float("image_share_prob_" + bucket, 0.0)))
+        if prob <= 0:
+            return None
+        # 心流给的「此刻适不适合发照片」（0~1）当乘数：心流说别发就不发
+        try:
+            urge = float(getattr(event, "amo_photo_urge", 1.0))
+        except Exception:
+            urge = 1.0
+        prob *= max(0.0, min(1.0, urge))
         if prob <= 0 or random.random() >= prob:
             return None
         now = now_ts()
-        allowed, used = self._image_share_quota(now)
+        allowed, used = self._image_share_quota(now, private)
         if not allowed:
             return None
         if getattr(self, "_share_inflight", False):
@@ -7124,8 +7167,14 @@ class HumanCorePlugin(Star):
             if not await self._send_image_to_umo(umo, data, prefix, quote):
                 return
             self.db.kv_set("image_share_last", now_ts())
-            self.db.kv_set("image_share_day", {"date": today_str(), "count": used + 1})
-            logger.info("[amo] 主动分享了一张图（今日第 %d 张）" % (used + 1))
+            if "GroupMessage" in umo:
+                # 所有群共用一份额度
+                self.db.kv_set("image_share_group_day", {"date": today_str(), "count": used + 1})
+                logger.info("[amo] 主动在群里分享了一张图（群聊今日第 %d 张）" % (used + 1))
+            else:
+                logger.info("[amo] 私聊主动分享了一张图（私聊不限额、不冷却）")
+            # 让她下一轮知道自己刚发过图，别一问三不知
+            self.db.kv_set("image_share_note", {"ts": now_ts(), "text": prefix or ""})
         except asyncio.TimeoutError:
             logger.warning("[amo] 主动分享出图超时（%ss），本次跳过" % timeout)
         except Exception as exc:
@@ -10522,6 +10571,34 @@ class HumanCorePlugin(Star):
                     )
             except Exception as exc:
                 logger.debug("[amo] 画图提示失败: %s" % exc)
+            # 心流说这条适合用声音 → 给她一个提示，让她自己决定调 amo_speak
+            try:
+                urge = float(getattr(event, "amo_voice_urge", 0.0) or 0.0)
+            except Exception:
+                urge = 0.0
+            if urge >= 0.6:
+                body += (
+                    "\n【声音提示】这条对方更想听到你的声音（心流 %d/10）：挑一句最想说的，"
+                    "用 amo_speak 工具发成语音；只发一句，别把整段念一遍。" % int(round(urge * 10))
+                )
+            # 刚发过图 → 让她知道，别假装没发过
+            try:
+                note = self.db.kv_get("image_share_note", {}) or {}
+            except Exception:
+                note = {}
+            try:
+                age = now_ts() - float(note.get("ts") or 0)
+            except Exception:
+                age = 1e9
+            if note and age < 1800:
+                note_text = str(note.get("text") or "").strip()
+                body += (
+                    "\n【你刚才的动作】%d 分钟前你主动给他发了一张照片%s。已经发过了："
+                    "不要说自己发不了照片，也别重复发同一张。" % (
+                        max(1, int(age // 60)),
+                        ("，附了一句「%s」" % note_text[:40]) if note_text else "",
+                    )
+                )
             parts = getattr(req, "extra_user_content_parts", None)
             if parts is None:
                 return

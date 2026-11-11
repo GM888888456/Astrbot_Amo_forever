@@ -166,10 +166,14 @@ BASE_JUDGE_PROMPT = """你是群聊机器人决策系统，判断机器人是否
 - `context_type`：mention_bot=在叫机器人；knowledge_comment=在聊知识、新闻、作品并发表看法；question=在提问（不一定问机器人）；casual_chat=日常闲聊；other=其他。
 - `topic`：当前在聊什么，2-6 个字（如“AI技术”“晚饭”“加班”）。
 - `reply_style`：answer=直接回答；comment=插一句评论/接话；quote=引用着接更清楚（人多、指代不清时）；none=这次不该说话。
+- `voice`：0-10 的整数，这次回复值不值得用「声音」说——短句、情绪（晚安/想你/哄人/安慰/撒娇）→ 8-10；
+  长解释、清单、代码、需要看的内容、冷冰冰的问答 → 0-3。
+- `share_photo`：0-10 的整数，此刻主动发一张照片合不合适——她正在做具体的事（吃饭、摸鱼、出去玩、在家）
+  并且有分享欲 → 6-10；在睡觉、在忙正事、对方在讲难过的事 → 0-2。
 
 ## 返回格式
 严格返回 JSON，不要输出任何其他内容：
-{{"relevance": 分数, "willingness": 分数, "social": 分数, "timing": 分数, "continuity": 分数, "is_mentioning_bot": true或false, "context_type": "mention_bot|knowledge_comment|question|casual_chat|other", "topic": "2-6个字", "target": "bot|other|all|unknown", "reply_style": "answer|comment|quote|none", "thought": "一句话说明这条在对谁说、依据是什么"{reasoning_part}}}
+{{"relevance": 分数, "willingness": 分数, "social": 分数, "timing": 分数, "continuity": 分数, "is_mentioning_bot": true或false, "context_type": "mention_bot|knowledge_comment|question|casual_chat|other", "topic": "2-6个字", "target": "bot|other|all|unknown", "reply_style": "answer|comment|quote|none", "voice": 0-10的整数, "share_photo": 0-10的整数, "thought": "一句话说明这条在对谁说、依据是什么"{reasoning_part}}}
 """
 
 # ============================================================
@@ -1282,6 +1286,14 @@ class HeartflowEngine:
                 context_type = _normalize_context_type(data.get("context_type"))
                 topic = str(data.get("topic") or "").strip()[:20]
                 style = _normalize_style(data.get("reply_style"))
+                # 语音 / 发图 的意愿：0~1，交给下游当提示与系数，不再由挂载插件自己拍脑袋
+                try:
+                    setattr(event, "amo_voice_urge",
+                            max(0.0, min(1.0, float(safe_extract_score(data, "voice", 0, 10)) / 10.0)))
+                    setattr(event, "amo_photo_urge",
+                            max(0.0, min(1.0, float(safe_extract_score(data, "share_photo", 0, 10)) / 10.0)))
+                except Exception:
+                    pass
                 force = bool(getattr(event, "amo_force_reply", False))
                 # 模型说“这次别说话”才压掉；如果是被点名/@，仍按对机器人说处理
                 if style == "none" and not force and not mention and target != "bot":
@@ -1380,7 +1392,7 @@ class HeartflowEngine:
 ## 严格判断
 根据上述规则严格判断。沉默也是好的选择，但不要因为“没叫我”就一律沉默。
 严格返回 JSON：
-{{"should_reply": true或false, "target": "bot|other|all|unknown", "thought": "一句话说明在对谁说"{immersive_reasoning_part}}}
+{{"should_reply": true或false, "target": "bot|other|all|unknown", "voice": 0-10的整数, "share_photo": 0-10的整数, "thought": "一句话说明在对谁说"{immersive_reasoning_part}}}
 """
         for attempt in range(self.judge_max_retries + 1):
             try:
@@ -1395,6 +1407,13 @@ class HeartflowEngine:
                 should_reply = bool(data.get("should_reply", False))
                 target = _normalize_target(data.get("target")) or "unknown"
                 thought = str(data.get("thought") or "").strip()
+                try:
+                    setattr(event, "amo_voice_urge",
+                            max(0.0, min(1.0, float(safe_extract_score(data, "voice", 0, 10)) / 10.0)))
+                    setattr(event, "amo_photo_urge",
+                            max(0.0, min(1.0, float(safe_extract_score(data, "share_photo", 0, 10)) / 10.0)))
+                except Exception:
+                    pass
                 if should_reply:
                     logger.info(f"[心流] 🌊 沉浸模式: ✅触发 | 对象:{target} | 剩余{remaining}秒 | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')}")
                 else:
