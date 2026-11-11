@@ -5085,6 +5085,10 @@ class HumanCorePlugin(Star):
                 hf_config.setdefault("enable_dynamic_threshold", True)
                 hf_config.setdefault("judge_provider_name", "")
                 self.heartflow = HeartflowEngine(self.context, hf_config)
+                try:
+                    self.heartflow.plugin = self
+                except Exception:
+                    pass
                 self.heartflow.set_identity(self.bot_name, self.bot_aliases)
             if SegmentEngine is not None:
                 seg_config = self._seg_config()
@@ -13101,6 +13105,10 @@ class HumanCorePlugin(Star):
                 hf_config.setdefault("enable_dynamic_threshold", True)
                 hf_config.setdefault("judge_provider_name", "")
                 self.heartflow = HeartflowEngine(self.context, hf_config)
+                try:
+                    self.heartflow.plugin = self
+                except Exception:
+                    pass
                 self.heartflow.set_identity(self.bot_name, self.bot_aliases)
             except Exception as exc:
                 logger.error("[amo] 应用心流配置失败: %s" % exc)

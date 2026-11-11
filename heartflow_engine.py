@@ -462,6 +462,17 @@ def _validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================
 # 插件主类
 # ============================================================
+def _record_judge_tokens(engine, provider, response):
+    """判分也是一次真实调用，记进用量；任何异常都不能影响判分。"""
+    try:
+        plugin = getattr(engine, "plugin", None) or getattr(engine, "p", None)
+        if plugin is None or not hasattr(plugin, "_record_tokens"):
+            return
+        plugin._record_tokens("judge", provider, response)
+    except Exception:
+        pass
+
+
 class HeartflowEngine:
     """心流插件 - 智能群聊主动回复系统
     
@@ -1251,7 +1262,7 @@ class HeartflowEngine:
                     system_prompt=system_inst,
                     image_urls=[]
                 )
-                self.p._record_tokens("judge", provider, resp)
+                _record_judge_tokens(self, provider, resp)
                 data = _extract_json(resp.completion_text.strip())
                 scores = {
                     "relevance": safe_extract_score(data, "relevance", self.score_min, self.score_max),
@@ -1379,7 +1390,7 @@ class HeartflowEngine:
                     system_prompt=system_inst,
                     image_urls=[]
                 )
-                self.p._record_tokens("judge", provider, resp)
+                _record_judge_tokens(self, provider, resp)
                 data = _extract_json(resp.completion_text.strip())
                 should_reply = bool(data.get("should_reply", False))
                 target = _normalize_target(data.get("target")) or "unknown"

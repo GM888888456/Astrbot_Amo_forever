@@ -135,3 +135,25 @@ class ModelLeakTests(unittest.TestCase):
 
     def test_deflect_text_varies(self):
         self.assertTrue(amo_main.leak_deflect_text())
+
+
+class JudgeRecordingTests(unittest.TestCase):
+    """判分自记账绝不能把判分搞挂（线上曾因 'HeartflowEngine' object has no attribute 'p' 全挂）。"""
+
+    def test_missing_plugin_ref_is_safe(self):
+        import heartflow_engine as hf
+        engine = object.__new__(hf.HeartflowEngine)
+        hf._record_judge_tokens(engine, object(), object())   # 不抛异常即通过
+
+    def test_records_when_plugin_present(self):
+        import heartflow_engine as hf
+        calls = []
+
+        class Plugin:
+            def _record_tokens(self, kind, provider, response):
+                calls.append(kind)
+
+        engine = object.__new__(hf.HeartflowEngine)
+        engine.plugin = Plugin()
+        hf._record_judge_tokens(engine, object(), object())
+        self.assertEqual(calls, ["judge"])
