@@ -507,7 +507,16 @@ except Exception:
 
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.4.4"
+PLUGIN_VERSION = "7.4.6"
+try:  # 版本号以 metadata.yaml 为准，避免两处不一致
+    import yaml as _amo_meta_yaml
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
+              encoding="utf-8") as _amo_meta_fh:
+        _amo_meta = _amo_meta_yaml.safe_load(_amo_meta_fh) or {}
+    if _amo_meta.get("version"):
+        PLUGIN_VERSION = str(_amo_meta["version"])
+except Exception:
+    pass
 
 # 这些开关是面板/主链路的底座：隐藏开关并强制开启，避免误关后整块功能消失。
 FORCED_ON_CONFIG_KEYS = frozenset({
