@@ -947,6 +947,12 @@
     "hint": "强制回复后，接下来这段时间说话会不耐烦",
     "default": 900
   },
+  "proactive_owner_ids": {
+    "type": "string",
+    "description": "【私聊】主动私聊给谁（留空 = 管理员和恋人）",
+    "hint": "逗号分隔的 UID / QQ / 飞书 open_id。留空就只对管理员和关系为「相恋」的人主动私聊；填了名单就只认名单（别人不再收到主动消息）。",
+    "default": ""
+  },
   "proactive_require_friend": {
     "type": "bool",
     "description": "只对好友主动私聊",
@@ -1468,17 +1474,17 @@
       }
     }
   },
+  "voice_urge_threshold": {
+    "type": "float",
+    "description": "【语音】心流说「该用语音」的阈值（0-1）",
+    "hint": "心流判分里的 voice 是 0-10，换算成 0-1 后达到这个值，她就会收到「这条适合用语音」的提示；调低（比如 0.45）她更常用语音，调高就更少。",
+    "default": 0.6
+  },
   "image_share_enable": {
     "type": "bool",
     "description": "主动分享照片",
     "default": true,
     "hint": "默认开：按下面各活动的概率补一张「我拍了张照」。睡觉/忙正事不会发；嫌多就把概率调低。"
-  },
-  "image_share_probability": {
-    "type": "float",
-    "description": "【已废弃】每次触发的概率",
-    "default": 0.06,
-    "hint": "7.5.1 起改成按活动分别配概率（下面几条 image_share_prob_*），这条不再生效。"
   },
   "image_share_prob_eat": {
     "type": "float",
@@ -1527,18 +1533,6 @@
     "description": "两次之间至少间隔（分钟）",
     "default": 180,
     "hint": "硬冷却，不管概率多大都不越过。0=不限制（不建议）。"
-  },
-  "image_share_daily_limit": {
-    "type": "int",
-    "description": "【已废弃】每天最多几张",
-    "default": 2,
-    "hint": "改成按来源分开算：私聊不限量，群聊看「群聊每天最多几张（所有群共用）」。"
-  },
-  "image_share_private_only": {
-    "type": "bool",
-    "description": "只在私聊分享",
-    "default": false,
-    "hint": "关掉后群里也会发：群聊共用每日 10 张、180 分钟冷却；私聊不限额不限冷却。"
   },
   "image_share_quote": {
     "type": "bool",

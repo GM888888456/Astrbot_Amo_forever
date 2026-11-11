@@ -61,8 +61,8 @@ class FakeImage:
 
 
 def make(**cfg):
-    conf = {"image_share_enable": True, "image_share_probability": 1.0,
-            "image_share_cooldown_minutes": 0, "image_share_daily_limit": 2,
+    conf = {"image_share_enable": True, "image_share_prob_home": 1.0,
+            "image_share_cooldown_minutes": 0, "image_share_group_daily_limit": 2,
             "image_share_timeout": 5}
     conf.update(cfg)
     plugin = object.__new__(amo_main.HumanCorePlugin)
@@ -94,21 +94,27 @@ class ShareDecisionTests(unittest.TestCase):
         self.assertIsNone(run(make(image_share_enable=False)._share_decision(FakeEvent())))
 
     def test_probability_zero(self):
-        self.assertIsNone(run(make(image_share_probability=0)._share_decision(FakeEvent())))
+        self.assertIsNone(run(make(image_share_prob_home=0)._share_decision(FakeEvent())))
 
-    def test_group_skipped_when_private_only(self):
-        p = make(image_share_private_only=True)
-        self.assertIsNone(run(p._share_decision(FakeEvent(private=False))))
+    def test_group_allowed_after_private_only_removed(self):
+        """「只在私聊分享」已去掉：群聊也发，只受共用额度与冷却限制。"""
+        p = make()
+        self.assertIsNotNone(run(p._share_decision(FakeEvent(private=False))))
 
-    def test_cooldown_blocks(self):
+    def test_cooldown_blocks_group(self):
         p = make(image_share_cooldown_minutes=180)
         p.db.kv["image_share_last"] = amo_main.now_ts()
-        self.assertIsNone(run(p._share_decision(FakeEvent())))
+        self.assertIsNone(run(p._share_decision(FakeEvent(private=False))))
 
-    def test_daily_limit_blocks(self):
-        p = make(image_share_daily_limit=1)
-        p.db.kv["image_share_day"] = {"date": amo_main.today_str(), "count": 1}
-        self.assertIsNone(run(p._share_decision(FakeEvent())))
+    def test_private_ignores_cooldown(self):
+        p = make(image_share_cooldown_minutes=180)
+        p.db.kv["image_share_last"] = amo_main.now_ts()
+        self.assertIsNotNone(run(p._share_decision(FakeEvent())))
+
+    def test_group_daily_limit_blocks(self):
+        p = make(image_share_group_daily_limit=1)
+        p.db.kv["image_share_group_day"] = {"date": amo_main.today_str(), "count": 1}
+        self.assertIsNone(run(p._share_decision(FakeEvent(private=False))))
 
     def test_missing_plugin(self):
         p = make()
@@ -140,7 +146,7 @@ class ShareTaskTests(unittest.TestCase):
         run(p._share_image_task(decision))
         self.assertEqual(len(p.image.calls), 1)
         self.assertEqual(p.sent, [b"IMG"])
-        self.assertEqual(p.db.kv["image_share_day"]["count"], 1)
+        self.assertEqual(p.db.kv["image_share_private_day"]["count"], 1)
 
     def test_task_timeout_does_not_send(self):
         p = make(image_share_timeout=1)

@@ -236,7 +236,7 @@
     .profile-item .meta { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
     .badge { font-size: 11px; padding: 3px 9px; border-radius: 99px; background: var(--card); color: var(--pink); border: 1px solid var(--line); white-space: nowrap; }
     .memory-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--muted); }
-    .settings-list { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .settings-list { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; overflow-x: hidden; }
     .settings-group { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--card); min-width: 0; }
     .settings-group summary { cursor: pointer; font-weight: 600; font-size: 13px; }
     .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) 25%; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); min-width: 0; }
@@ -328,13 +328,16 @@
       display: flex; flex-direction: column; background: var(--card);
       padding: max(10px, env(safe-area-inset-top)) 16px calc(10px + env(safe-area-inset-bottom)); }
     .sheet-top { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); flex: 0 0 auto; }
-    .sheet-nav { display: flex; flex: 0 1 auto; align-items: center; gap: 16px; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+    .sheet-nav { display: flex; flex: 0 1 auto; align-items: center; gap: 16px; row-gap: 6px; min-width: 0; flex-wrap: wrap; overflow: visible; }
     .sheet-nav button { flex: 0 0 auto; min-width: 0; padding: 0; text-align: left; font-size: 13px; line-height: 1.2; border: 0; border-radius: 0; background: transparent; white-space: nowrap; }
     .sheet-nav button.active { color: var(--muted); border-color: transparent; background: transparent; }
     .sheet-nav button:hover { color: var(--muted); background: transparent; }
     .close-text { flex: 0 0 auto; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 13px; line-height: 1.2; }
     .close-text:hover, .close-text:focus-visible { color: var(--muted); background: transparent; }
-    .sheet-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 0 4px; }
+    .sheet-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 12px 0 4px; touch-action: pan-y; }
+    /* 二级面板只纵向滚动：左右滑动不再翻页/横移（输入框、文本域照常） */
+    .sheet-nav { touch-action: pan-y; }
+    .sheet-body input, .sheet-body textarea, .sheet-body select { touch-action: auto; }
     .sheet-body .tab-panel { margin: 0; }
     .sheet-body .settings-list { margin-top: 0; }
 
@@ -983,6 +986,7 @@
       "mood_update", "config_save", "profile_save", "profile_delete",
       "relation_save", "relation_delete", "memory_add", "memory_delete",
       "say", "city_set", "profiles_sync", "diary/open", "diary/write",
+      "voice/save",
     ]);
 
     async function call(action, payload) {
@@ -2130,6 +2134,8 @@
     const sheetNav = document.getElementById("sheetNav");
     const PHOTO_TABS = [
       { label: "日记", sheet: "diary" },
+      { label: "拍照", sheet: "settings", group: "照片" },
+      { label: "语音", sheet: "settings", group: "语音" },
       { label: "分段", sheet: "settings", group: "分段" },
       { label: "记忆", sheet: "settings", group: "记忆" },
     ];
@@ -2499,6 +2505,7 @@
     document.getElementById("profileSearch").addEventListener("input", () => renderProfiles(profilesCache));
 
     let configItems = [];
+    let configGroupNotes = {};
 
     const OPTION_LABELS = {
       reply_style: { soft: "温柔", cool: "清冷", lively: "活泼", mature: "成熟" },
@@ -2952,6 +2959,12 @@
         box.appendChild(themeRow);
       }
       if (activeGroup === "时间天气" && !term) box.appendChild(buildCityRow());
+      if (!term && configGroupNotes[activeGroup]) {
+        const note = document.createElement("div");
+        note.className = "sub";
+        note.textContent = configGroupNotes[activeGroup];
+        box.appendChild(note);
+      }
       if (!items.length) {
         if (activeGroup !== "基础") box.textContent = "这个分组没有匹配的配置";
         return;
@@ -2971,7 +2984,15 @@
           left.appendChild(hint);
         }
         row.appendChild(left);
-        row.appendChild(settingControl(item));
+        const control = settingControl(item);
+        if (item.external === "voice") {
+          const input = control.querySelector("[data-config-key]");
+          if (input) {
+            input.dataset.voiceKey = input.dataset.configKey;
+            delete input.dataset.configKey;
+          }
+        }
+        row.appendChild(control);
         box.appendChild(row);
       });
     }
@@ -3008,6 +3029,7 @@
         const result = await call("config");
         const data = objectFrom(result);
         configItems = Array.isArray(data.items) ? data.items : [];
+        configGroupNotes = (data.groupNotes && typeof data.groupNotes === "object") ? data.groupNotes : {};
         if (configItems.some((item) => item.special === "select_provider")) await ensureProviders();
         if (configItems.some((item) => item.special === "select_memory_plugin")) await ensureMemoryPlugins();
         renderSettings();
@@ -3021,7 +3043,8 @@
     document.getElementById("btnSaveSettings").addEventListener("click", async () => {
       const changes = {};
       try {
-        document.querySelectorAll("[data-config-key]").forEach((el) => {
+        const voiceChanges = {};
+        document.querySelectorAll("[data-config-key],[data-voice-key]").forEach((el) => {
           const type = el.dataset.configType;
           let value;
           if (type === "bool") value = el.classList.contains("toggle-switch") ? el.dataset.checked === "1" : el.checked;
@@ -3036,10 +3059,17 @@
             try { value = JSON.parse(el.value || (type === "dict" || type === "object" ? "{}" : "[]")); }
             catch (error) { throw new Error(el.dataset.configKey + " 的 JSON 格式错误"); }
           } else value = el.value;
-          changes[el.dataset.configKey] = value;
+          if (el.dataset.voiceKey) voiceChanges[el.dataset.voiceKey] = value;
+          else changes[el.dataset.configKey] = value;
         });
         const result = await call("config_save", { changes });
         if (result && result.code && result.code !== 0) throw new Error(result.msg || "保存失败");
+        if (Object.keys(voiceChanges).length) {
+          const voiceResult = await call("voice/save", { changes: voiceChanges });
+          if (voiceResult && voiceResult.code && voiceResult.code !== 0) {
+            throw new Error(voiceResult.msg || "语音设置保存失败");
+          }
+        }
         toast("设置已保存");
         await loadSettings();
         await load();

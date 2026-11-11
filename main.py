@@ -4993,6 +4993,7 @@ class ReplyGate:
 # 以前守卫按「methods 里有没有 GET」判断，而写接口全被注册成 GET+POST，于是守卫一次都没执行过。
 WRITE_ROUTES = frozenset({
     "/config/save", "/config_save",
+    "/voice/save",
     "/profile/save", "/profile_save",
     "/profile/delete", "/profile_delete",
     "/relation/save", "/relation_save",
@@ -7123,8 +7124,6 @@ class HumanCorePlugin(Star):
         if event is None:
             return None
         private = bool(event.is_private_chat())
-        if self.cfg_bool("image_share_private_only", True) and not private:
-            return None
         # 活动门控：她在吃饭 / 摸鱼 / 出去玩 / 在家才按概率发，睡觉和忙正事不发
         bucket = self._share_bucket()
         default_prob = self.SHARE_PROB_DEFAULTS.get(bucket, 0.0)
@@ -10592,7 +10591,7 @@ class HumanCorePlugin(Star):
                 urge = float(getattr(event, "amo_voice_urge", 0.0) or 0.0)
             except Exception:
                 urge = 0.0
-            if urge >= 0.6:
+            if urge >= self.cfg_float("voice_urge_threshold", 0.6):
                 body += (
                     "\n【声音提示】这条对方更想听到你的声音（心流 %d/10）：挑一句最想说的，"
                     "用 amo_speak 工具发成语音；只发一句，别把整段念一遍。" % int(round(urge * 10))
@@ -12228,6 +12227,30 @@ class HumanCorePlugin(Star):
             self.db.kv_set("weather_alert_checked", "")
             logger.warning("[amo] 天气提醒所有平台都失败: %s" % umos)
 
+    def _proactive_owner_ids(self, profiles=None):
+        """主动私聊的对象：配了 proactive_owner_ids 只认名单；留空 = 管理员 + 相恋。"""
+        raw = str(self.cfg_str("proactive_owner_ids", "") or "").replace("，", ",")
+        ids = {item.strip() for item in raw.split(",") if item.strip()}
+        if ids:
+            return ids
+        ids = {str(uid).strip() for uid in (self.admin_uids or set()) if str(uid).strip()}
+        rows = profiles
+        if rows is None:
+            try:
+                rows = self.db.proactive_profiles(limit=200)
+            except Exception:
+                rows = []
+        for profile in rows or []:
+            try:
+                if str(profile.get("relation") or "") != "相恋":
+                    continue
+                uid = str(profile.get("uid") or "").strip()
+            except Exception:
+                continue
+            if uid:
+                ids.add(uid)
+        return ids
+
     async def _maybe_proactive(self):
         quiet = quiet_now(self.cfg_str("quiet_hours", "23:30-07:30"))
         try:
@@ -12236,6 +12259,10 @@ class HumanCorePlugin(Star):
             return
         if self.cfg_bool("proactive_require_friend", True):
             profiles = [profile for profile in profiles if self._is_proactive_friend(profile)]
+        # 名单留空 = 管理员 + 相恋；配了名单就只认名单
+        owner_ids = self._proactive_owner_ids(profiles)
+        if owner_ids:
+            profiles = [p for p in profiles if str(p.get("uid") or "") in owner_ids]
         if not profiles:
             return
         random.shuffle(profiles)
@@ -12922,6 +12949,7 @@ class HumanCorePlugin(Star):
             ("/memory_candidates", self.api_memory_candidates, ["GET"]),
             ("/profiles_sync", self.api_profiles_sync, ["GET", "POST"]),
             ("/config", self.api_config, ["GET"]),
+            ("/voice/save", self.api_voice_save, ["GET", "POST"]),
             ("/weather/brief", self.api_weather_brief, ["GET", "POST"]),
             ("/city/search", self.api_city_search, ["GET", "POST"]),
             ("/city/set", self.api_city_set, ["GET", "POST"]),
@@ -13160,7 +13188,9 @@ class HumanCorePlugin(Star):
                 continue
             if key.startswith("hf_"):
                 group = "心流"
-            elif key.startswith("draw_") or key.startswith("photo_"):
+            elif key.startswith("voice_"):
+                group = "语音"
+            elif key.startswith("image_share_") or key.startswith("draw_") or key.startswith("photo_"):
                 group = "照片"
             elif key.startswith("seg_"):
                 group = "分段"
@@ -13897,7 +13927,18 @@ class HumanCorePlugin(Star):
 
     async def api_config(self):
         await self._ensure_ready()
-        return {"code": 0, "data": {"items": self._config_schema_items()}}
+        items = self._config_schema_items()
+        notes = {}
+        try:
+            voice_items = self._voice_panel_items()
+            items.extend(voice_items)
+            if not voice_items:
+                notes["语音"] = ("没找到「我想和你说说话」（未安装或未启用）。"
+                                  "装好并启用它，语音设置才会出现在这里；key、后端、音色仍在它自己的配置页填。")
+        except Exception as exc:
+            logger.warning("[amo] 读取语音设置失败: %s" % exc)
+            notes["语音"] = "读取语音设置失败：%s" % exc
+        return {"code": 0, "data": {"items": items, "groupNotes": notes}}
 
     # ---- 用量 / 余额 ----
     def _usage_db_path(self):
@@ -14128,6 +14169,149 @@ class HumanCorePlugin(Star):
         await self._ensure_ready()
         data = await self._balance_cached()
         return {"code": 0, "data": data}
+
+    VOICE_PLUGIN_NAMES = ("Astrbot_Amo_Speechsound", "astrbot_plugin_speechsound", "amo_speechsound")
+    # 语音插件（我想和你说说话）的设置：key, 类型, 标题, 说明, 默认值
+    # 只放行为类开关；后端 / key / 音色仍然在语音插件自己的配置页填。
+    VOICE_SETTING_KEYS = (
+        ("enable", "bool", "启用语音", "总开关：关掉后她发不了语音，也不会有兜底转语音。", True),
+        ("group_enable", "bool", "允许群聊发语音", "默认关。群聊里还受下面的「每天条数」和「最小间隔」限制。", False),
+        ("auto_fallback", "bool", "兜底转语音", "你明说要语音、她只回了文字时，补一条语音。", True),
+        ("dual_output", "bool", "语音之外同时发文字", "关掉就只发语音。", False),
+        ("read_relation", "bool", "参考关系度决定语气", "从陪伴这边读关系阶段，越亲近越容易开口、语气越软。", True),
+        ("schedule_aware", "bool", "参考日程决定场景", "按在家里 / 在外面 / 在睡觉切到对应场景音色。", True),
+        ("speak_threshold", "float", "开口阈值（0-1，越高越少开口）", "兜底规则用的及格线。她主动调工具发语音时不受这个限制。", 0.6),
+        ("daily_quota", "int", "群聊每天语音条数上限", "所有群共用这一份额度，0 = 不限。私聊不占这个额度。", 10),
+        ("cooldown_seconds", "int", "群聊两条语音最小间隔（秒）", "只管群聊，防刷屏。", 240),
+        ("private_cooldown_seconds", "int", "私聊两条语音最小间隔（秒）", "0 = 私聊不冷却（推荐）。", 0),
+        ("max_chars", "int", "每段字数上限", "整条语音总长 = 这个数 × 最多分段数，超过就退回文字。", 80),
+        ("max_segments", "int", "最多分段数", "长句按标点切段，最多切几段。", 2),
+        ("speed", "float", "语速（0.5-2.0）", "1.0 是正常语速。", 1.0),
+        ("volume", "float", "音量（0.1-2.0）", "", 1.0),
+    )
+
+    def _voice_plugin(self):
+        """找「我想和你说说话」插件实例；没装或没启用返回 None。"""
+        for name in self.VOICE_PLUGIN_NAMES:
+            try:
+                meta = self.context.get_registered_star(name)
+            except Exception:
+                meta = None
+            star = self._voice_instance(meta)
+            if star is not None:
+                return star
+        try:
+            for meta in self.context.get_all_stars():
+                marker = ((getattr(meta, "name", "") or "") + " "
+                          + (getattr(meta, "module_path", "") or "")).lower()
+                if "speechsound" not in marker:
+                    continue
+                star = self._voice_instance(meta)
+                if star is not None:
+                    return star
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _voice_instance(meta):
+        if meta is None:
+            return None
+        for attr in ("star_cls", "instance", "star", "plugin"):
+            value = getattr(meta, attr, None)
+            if value is None or isinstance(value, type):
+                continue
+            if callable(getattr(value, "_persist_config", None)) and hasattr(value, "config"):
+                return value
+        return None
+
+    @staticmethod
+    def _voice_value(config, key, kind, default):
+        try:
+            raw = config.get(key) if hasattr(config, "get") else None
+        except Exception:
+            raw = None
+        if raw is None:
+            return default
+        if kind == "bool":
+            if isinstance(raw, bool):
+                return raw
+            return str(raw).strip().lower() in ("1", "true", "yes", "on", "开")
+        if kind == "int":
+            try:
+                return int(float(raw))
+            except Exception:
+                return default
+        if kind == "float":
+            try:
+                return float(raw)
+            except Exception:
+                return default
+        return str(raw)
+
+    def _voice_panel_items(self):
+        """面板「语音」分组的行：值来自语音插件的配置。"""
+        plugin = self._voice_plugin()
+        if plugin is None:
+            return []
+        config = getattr(plugin, "config", {}) or {}
+        items = []
+        for key, kind, title, hint, default in self.VOICE_SETTING_KEYS:
+            items.append({
+                "key": key,
+                "type": kind,
+                "description": title,
+                "hint": hint,
+                "default": default,
+                "options": [],
+                "special": "",
+                "group": "语音",
+                "external": "voice",
+                "value": self._voice_value(config, key, kind, default),
+            })
+        return items
+
+    async def api_voice_save(self):
+        """把「语音」分组里的设置写进语音插件（内存立即生效 + 落盘）。"""
+        await self._ensure_ready()
+        data = await self._body()
+        changes = data.get("changes") if isinstance(data.get("changes"), dict) else data
+        plugin = self._voice_plugin()
+        if plugin is None:
+            return {"code": 1, "msg": "没找到「我想和你说说话」（未安装或未启用）"}
+        config = getattr(plugin, "config", None)
+        if config is None or not hasattr(config, "update"):
+            return {"code": 1, "msg": "语音插件的配置对象不可写"}
+        kinds = {key: kind for key, kind, _t, _h, _d in self.VOICE_SETTING_KEYS}
+        applied = {}
+        for key, value in (changes or {}).items():
+            kind = kinds.get(key)
+            if not kind:
+                continue
+            try:
+                applied[key] = self._coerce_config_value(kind, value)
+            except Exception as exc:
+                logger.warning("[amo] 语音设置 %s 值无效: %s" % (key, exc))
+                continue
+        if not applied:
+            return {"code": 0, "data": {"saved": {}, "persisted": False}}
+        try:
+            config.update(applied)
+        except Exception as exc:
+            logger.error("[amo] 写入语音插件配置失败: %s" % exc)
+            return {"code": 1, "msg": "写入失败：" + str(exc)}
+        persisted = False
+        saver = getattr(plugin, "_persist_config", None)
+        if callable(saver):
+            try:
+                result = saver()
+                if hasattr(result, "__await__"):
+                    result = await result
+                persisted = bool(result)
+            except Exception as exc:
+                logger.warning("[amo] 语音设置落盘失败（内存已生效）: %s" % exc)
+        logger.info("[amo] 语音设置已更新: %s" % ", ".join(sorted(applied)))
+        return {"code": 0, "data": {"saved": applied, "persisted": persisted}}
 
     async def api_config_save(self):
         await self._ensure_ready()
