@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.5.5"
+PLUGIN_VERSION = "7.5.6"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -10565,6 +10565,18 @@ class HumanCorePlugin(Star):
         )
         return "\n".join(parts)
 
+    VOICE_ASK_WORDS = (
+        "语音", "发条音", "念给我", "读给我", "读一下", "说句话", "说给我听",
+        "用声音", "你的声音", "想听你说", "想听听", "录音",
+    )
+
+    def _user_asks_voice(self, text: str) -> bool:
+        """他这轮有没有明确要语音。命中就下硬要求，不再等心流打分。"""
+        body = str(text or "")
+        if not body:
+            return False
+        return any(word in body for word in self.VOICE_ASK_WORDS)
+
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req):
         try:
@@ -10591,7 +10603,26 @@ class HumanCorePlugin(Star):
                 urge = float(getattr(event, "amo_voice_urge", 0.0) or 0.0)
             except Exception:
                 urge = 0.0
-            if urge >= self.cfg_float("voice_urge_threshold", 0.6):
+            asked_voice = self._user_asks_voice(event.message_str or "")
+            if asked_voice:
+                # 他明确要语音：不再等心流打分。模型只要被允许“害羞一下”就会连
+                # amo_speak 都不调，所以这里把推辞的退路堵死。
+                urge = max(urge, 1.0)
+                try:
+                    # 标记：这轮他只要语音，文字不要（语音插件出不了声时会自己补文字）
+                    event.amo_voice_reply_only = True
+                except Exception:
+                    pass
+                body += (
+                    "\n【声音要求·必须照做】他这轮明确要你用语音说话。你必须调用 amo_speak 工具，"
+                    "把你想说的那句念出来（text 只放要念的内容，20~60 字，不要括号里的动作说明），"
+                    "然后可以再补一句很短的文字。禁止说「不好意思 / 宿舍里不方便 / 等会儿再录 / "
+                    "我发不了语音 / 多难为情」这类推辞，也禁止只回文字不调工具。"
+                )
+                logger.info(
+                    "[amo] 本轮用户明确要语音，已下硬要求：%s" % str(event.message_str or "")[:40]
+                )
+            elif urge >= self.cfg_float("voice_urge_threshold", 0.6):
                 body += (
                     "\n【声音提示】这条对方更想听到你的声音（心流 %d/10）：挑一句最想说的，"
                     "用 amo_speak 工具发成语音；只发一句，别把整段念一遍。" % int(round(urge * 10))
@@ -10816,6 +10847,11 @@ class HumanCorePlugin(Star):
                 text = leak_deflect_text()
                 result.chain = [Comp.Plain(text=text)]
             if not text.strip():
+                return
+            if getattr(event, "amo_voice_reply_only", False):
+                # 他明确要的是语音，语音插件会把它念出来；这段文字就别再发了
+                logger.info("[amo] 本轮只发语音，文字不发：%s" % text[:40])
+                result.chain = []
                 return
             group = not event.is_private_chat()
             if not group:
