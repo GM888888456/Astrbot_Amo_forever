@@ -50,6 +50,28 @@ BEACH_ACTIVITIES = ("游泳", "泡温泉", "玩水", "潜水", "冲浪")
 HOME_PLACE_WORDS = ("家", "小窝", "公寓", "住处", "宿舍", "房间")
 
 
+# 贴身穿的 / 睡觉穿的：在外面不能换，换了也不能说
+PRIVATE_WEAR_WORDS = (
+    "睡衣", "睡裙", "睡袍", "家居服", "内衣", "文胸", "胸罩", "内裤", "吊带",
+    "丝袜", "比基尼", "泳装", "泳衣", "泳裤", "浴巾", "浴袍",
+)
+HOME_PLACES = ("家", "小窝", "公寓", "住处", "宿舍", "房间", "卧室")
+
+
+def is_private_wear(name):
+    return any(word in str(name or "") for word in PRIVATE_WEAR_WORDS)
+
+
+def at_home(activity):
+    """按日程判断她此刻是不是在家（含卧室/宿舍这类）。"""
+    activity = activity or {}
+    place = str(activity.get("place") or "")
+    zone = str(activity.get("zone") or "")
+    if zone in ("home", "bedroom"):
+        return True
+    return any(word in place for word in HOME_PLACES)
+
+
 class OutfitEngine:
     """按性别 + 场景 + 日期给日程配衣服。"""
 
@@ -194,6 +216,22 @@ class OutfitEngine:
         except Exception:
             pass
         return payload
+
+    def can_change_to(self, name):
+        """能不能现在换成这套。返回 (ok, 原因)。
+
+        贴身衣物 / 睡衣在门外不能换——不然会出现「在公司穿上睡衣」这种画面。
+        """
+        if not is_private_wear(name):
+            return True, ""
+        try:
+            activity = self.plugin.state.current_activity() or {}
+        except Exception:
+            activity = {}
+        if at_home(activity):
+            return True, ""
+        place = str(activity.get("place") or "").strip() or "外面"
+        return False, place
 
     def clear_override(self, day):
         try:

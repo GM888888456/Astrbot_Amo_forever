@@ -507,7 +507,7 @@ except Exception:
 
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.4.1"
+PLUGIN_VERSION = "7.4.2"
 
 # 这些开关是面板/主链路的底座：隐藏开关并强制开启，避免误关后整块功能消失。
 FORCED_ON_CONFIG_KEYS = frozenset({
@@ -7268,6 +7268,16 @@ class HumanCorePlugin(Star):
             return ""
         if not name:
             return ""
+        # 贴身的 / 睡衣：在外面不能换，也别让她嘴上说换好了
+        try:
+            ok, place = engine.can_change_to(name)
+        except Exception:
+            ok, place = True, ""
+        if not ok:
+            logger.info("[amo] 在外面不让换贴身衣物: %s @ %s" % (name, place))
+            return ("【换装】他想让你换成「%s」，但你现在在%s，这种东西不能在外面换。"
+                    "用一句话自然挡回去：撒个娇说回家再换、或者不好意思地堵他一句，"
+                    "不要说你已经换上了。" % (name, place))
         day = today_str()
         try:
             engine.change_outfit(day, name)
@@ -14662,6 +14672,12 @@ class HumanCorePlugin(Star):
         if not name:
             return {"code": 1, "msg": "缺少衣服名"}
         day = today_str()
+        try:
+            ok, place = self.outfits.can_change_to(name)
+        except Exception:
+            ok, place = True, ""
+        if not ok:
+            return {"code": 1, "msg": "她现在在%s，这类衣服不能在外面换" % place}
         data = self.outfits.change_outfit(day, name, from_hour=str(payload.get("from") or ""))
         items = self.state.schedule.get(day) or self.db.get_schedule(day) or []
         items = self.outfits.assign(self.state._hourly_schedule(items), day)

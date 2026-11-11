@@ -595,9 +595,46 @@ class GiftEngine:
         except Exception:
             return None
 
+    PRIVATE_GIFT_WORDS = (
+        "内衣", "文胸", "胸罩", "内裤", "睡衣", "睡裙", "吊带", "丝袜",
+        "比基尼", "泳装", "泳衣", "浴巾", "浴袍",
+    )
+    CLOTHING_GIFT_WORDS = (
+        "衣服", "外套", "裙", "衬衫", "卫衣", "毛衣", "针织", "风衣", "夹克",
+        "裤", "短袖", "T恤", "t恤", "西装", "礼服", "鞋", "袜子", "帽",
+    )
+
+    def _at_home(self):
+        try:
+            activity = self.plugin.state.current_activity() or {}
+        except Exception:
+            return True
+        place = str(activity.get("place") or "")
+        zone = str(activity.get("zone") or "")
+        if zone in ("home", "bedroom"):
+            return True
+        return any(word in place for word in ("家", "小窝", "公寓", "住处", "宿舍", "房间", "卧室"))
+
+    def _private_gift_hint(self, item):
+        """贴身的、睡觉穿的：收起来就好，不演「当场换上」。"""
+        if not any(word in item for word in self.PRIVATE_GIFT_WORDS):
+            return ""
+        if self._at_home():
+            return ("【贴身的东西】%s 是他送的，这种不会当众换、也不会细说；"
+                    "开心收下、收进柜子就好，最多害羞一句。" % item)
+        return ("【贴身的东西】%s 是他送的，但你现在在外面，绝对不要说「已经换上了」；"
+                "收起来、回家再说，可以害羞或者嗔他一句。" % item)
+
     def _affordance_text(self, item, text, temp):
         """单件礼物在当前话题下要不要触发具现化。"""
         text = str(text or "")
+        private = self._private_gift_hint(item)
+        if private:
+            return private
+        # 衣服类：在外面就别演「已经穿上了」，等回家
+        if any(word in item for word in self.CLOTHING_GIFT_WORDS) and not self._at_home():
+            return ("【衣服】%s 是他送的，但你现在在外面，不会当场换上；"
+                    "说「回家试」「先收着」就可以，别描述已经穿着它。" % item)
         for keywords, trigger, action in AFFORDANCES:
             if not any(word in item for word in keywords):
                 continue

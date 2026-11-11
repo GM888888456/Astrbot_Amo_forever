@@ -157,3 +157,70 @@ class OutfitCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrivateWearGuardTests(unittest.TestCase):
+    """在外面不能换睡衣内衣，也不能嘴上说换好了。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.plugin = FakePlugin(self.tmp)
+        self.engine = outfit_engine.OutfitEngine(self.plugin)
+
+    def _with_activity(self, activity):
+        class State:
+            def current_activity(self_inner):
+                return activity
+        self.plugin.state = State()
+        return self.engine
+
+    def test_pajamas_blocked_outside(self):
+        engine = self._with_activity({"activity": "上班", "place": "公司", "zone": "office"})
+        ok, place = engine.can_change_to("纯棉睡衣")
+        self.assertFalse(ok)
+        self.assertEqual(place, "公司")
+
+    def test_pajamas_allowed_at_home(self):
+        engine = self._with_activity({"activity": "在家", "place": "南明区·小窝", "zone": "home"})
+        ok, _ = engine.can_change_to("纯棉睡衣")
+        self.assertTrue(ok)
+
+    def test_underwear_blocked_outside(self):
+        engine = self._with_activity({"activity": "逛街", "place": "商场", "zone": "mall"})
+        self.assertFalse(engine.can_change_to("蕾丝内衣")[0])
+
+    def test_normal_clothes_fine_outside(self):
+        engine = self._with_activity({"activity": "逛街", "place": "商场", "zone": "mall"})
+        self.assertTrue(engine.can_change_to("红色连衣裙")[0])
+
+
+class GiftAffordancePlaceTests(unittest.TestCase):
+    """买了衣服/睡衣，在外面不能演「当场换上」。"""
+
+    def _engine(self, activity):
+        import gift_engine
+        tmp = tempfile.mkdtemp()
+        plugin = FakePlugin(tmp)
+        plugin.state = type("S", (), {"current_activity": lambda self: activity,
+                                      "weather": {}})()
+        return gift_engine.GiftEngine(plugin)
+
+    def test_pajama_while_outside(self):
+        engine = self._engine({"activity": "上班", "place": "公司", "zone": "office"})
+        hint = engine._private_gift_hint("粉色睡衣")
+        self.assertIn("不要说", hint)
+
+    def test_pajama_at_home(self):
+        engine = self._engine({"activity": "在家", "place": "家", "zone": "home"})
+        hint = engine._private_gift_hint("粉色睡衣")
+        self.assertNotIn("在外面", hint)
+
+    def test_clothing_while_outside(self):
+        engine = self._engine({"activity": "逛街", "place": "商场", "zone": "mall"})
+        hint = engine._affordance_text("米色外套", "今天好冷", 5)
+        self.assertIn("回家", hint)
+
+    def test_normal_item_unaffected(self):
+        engine = self._engine({"activity": "逛街", "place": "商场", "zone": "mall"})
+        hint = engine._affordance_text("手表", "现在几点", 15)
+        self.assertIn("表", hint)
