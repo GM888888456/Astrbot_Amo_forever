@@ -1,5 +1,11 @@
 # Changelog
 
+## 7.5.2（体验类开关改为默认开）
+
+- `draw_enable`（聊天里自动画图）、`image_share_enable`（主动分享）、`photo_enable`（按日程出图）默认值改为 **true**；
+  新装用户开箱就有体验，嫌费额度可在配置里关掉；
+- `image_share_private_only` 默认改为 **false**（群聊也能发，但受「所有群共用每日 10 张 + 180 分钟冷却」限制）。
+
 ## 7.5.1（修发图概率没生效 + 打开画图引擎）
 
 - **bug**：7.5.0 新加的 `image_share_prob_*` / `image_share_group_daily_limit` 没写进 `_conf_schema.json`，

@@ -1471,8 +1471,8 @@
   "image_share_enable": {
     "type": "bool",
     "description": "主动分享照片",
-    "default": false,
-    "hint": "开启后，回复完偶尔会补一张「我拍了张照」。默认关，开了也受下面三个限制约束；生图插件没装会自动跳过。"
+    "default": true,
+    "hint": "默认开：按下面各活动的概率补一张「我拍了张照」。睡觉/忙正事不会发；嫌多就把概率调低。"
   },
   "image_share_probability": {
     "type": "float",
@@ -1531,8 +1531,8 @@
   "image_share_private_only": {
     "type": "bool",
     "description": "只在私聊分享",
-    "default": true,
-    "hint": "关掉后群里也会发，容易刷屏，通常保持开启。"
+    "default": false,
+    "hint": "关掉后群里也会发：群聊共用每日 10 张、180 分钟冷却；私聊不限额不限冷却。"
   },
   "image_share_quote": {
     "type": "bool",
@@ -1560,9 +1560,9 @@
   },
   "draw_enable": {
     "type": "bool",
-    "description": "【照片】聊天里自动画图",
-    "default": false,
-    "hint": "他聊到吃的/在干嘛，或直接说「拍给我看看」时，让她用万象画卷生一张发过来。需要先装好万象画卷。"
+    "description": "聊天里自动画图",
+    "default": true,
+    "hint": "默认开：他聊到吃的/在干嘛，或说「拍给我看看」时，用万象画卷生一张。要省钱或没装生图插件再关。"
   },
   "draw_trigger_mode": {
     "type": "string",
@@ -1649,9 +1649,9 @@
   },
   "photo_enable": {
     "type": "bool",
-    "description": "【照片】按日程分享照片",
-    "default": false,
-    "hint": "旅游/逛街/周末/日常按概率发街景或自拍；工作日早上出门分享穿搭自拍。"
+    "description": "照片引擎（按日程自己出图）",
+    "default": true,
+    "hint": "默认开：按日程在她吃饭、穿搭、逛街、旅游、周末时按概率出图；受每日张数、夜间静默、比例等限制。"
   },
   "photo_outfit_prob": {
     "type": "int",
