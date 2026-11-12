@@ -3191,34 +3191,52 @@
       });
       // 球面均匀撒点，再跑 3D 力导向，先长成“一团脑子”的基础形状
       const list = [...nodes.values()];
-      const golden = Math.PI * (3 - Math.sqrt(5));
       const shell = 70 + Math.min(110, list.length * 1.1);
+      scatterNeuronBall(list, shell);
+      return { nodes: list, links, index: nodes, radius: shell };
+    }
+
+    function scatterNeuronBall(list, shell) {
+      /* 把节点均匀摊在球面上。建图和「力导向发散」兜底都用它。 */
+      const golden = Math.PI * (3 - Math.sqrt(5));
       list.forEach((node, i) => {
         const y = 1 - (i / Math.max(1, list.length - 1)) * 2;
         const ring = Math.sqrt(Math.max(0, 1 - y * y));
         const theta = golden * i;
         node.x = Math.cos(theta) * ring * shell;
         node.y = y * shell;
-        node.z = Math.sin(theta) * ring * shell;        node.vx = 0; node.vy = 0; node.vz = 0;
+        node.z = Math.sin(theta) * ring * shell;
+        node.vx = 0; node.vy = 0; node.vz = 0;
+        node.dx = 0; node.dy = 0; node.dz = 0;
       });
-      return { nodes: list, links, index: nodes, radius: shell };
     }
 
     function settleNeuronGraph(graph, iterations) {
+      /* Fruchterman-Reingold：力只决定「这一步往哪走、走多远」，不累加进速度。
+
+         旧写法是「力→速度→坐标」一路累加，节点一多必定发散：拿线上 144 个节点
+         实测，跑完坐标能到 2e49，再做归一化整张图就缩成一个点，看起来像图坏了。
+         这里按位移走，温度逐步降到 0，收敛且不会爆。 */
       const nodes = graph.nodes;
       const n = nodes.length;
+      if (!n) return;
+      const K = 30;                                   // 理想间距
+      let temp = Math.max(24, (graph.radius || 120) * 0.12);
+      const cool = temp / (Math.max(1, iterations) + 1);
       for (let step = 0; step < iterations; step += 1) {
+        for (let i = 0; i < n; i += 1) {
+          nodes[i].dx = 0; nodes[i].dy = 0; nodes[i].dz = 0;
+        }
         for (let i = 0; i < n; i += 1) {
           const a = nodes[i];
           for (let j = i + 1; j < n; j += 1) {
             const b = nodes[j];
             let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
-            const dist2 = dx * dx + dy * dy + dz * dz || 0.01;
-            const dist = Math.sqrt(dist2);
-            const force = Math.min(700, 900 / dist2);
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
+            const force = (K * K) / dist;              // 斥力：越近越强，但随距离衰减
             dx /= dist; dy /= dist; dz /= dist;
-            a.vx += dx * force; a.vy += dy * force; a.vz += dz * force;
-            b.vx -= dx * force; b.vy -= dy * force; b.vz -= dz * force;
+            a.dx += dx * force; a.dy += dy * force; a.dz += dz * force;
+            b.dx -= dx * force; b.dy -= dy * force; b.dz -= dz * force;
           }
         }
         graph.links.forEach((link) => {
@@ -3226,25 +3244,36 @@
           if (!a || !b) return;
           let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
           const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
-          const force = (dist - 52) * 0.05;
+          const force = (dist * dist) / K;             // 引力：越远拉得越狠
           dx /= dist; dy /= dist; dz /= dist;
-          a.vx += dx * force; a.vy += dy * force; a.vz += dz * force;
-          b.vx -= dx * force; b.vy -= dy * force; b.vz -= dz * force;
+          a.dx += dx * force; a.dy += dy * force; a.dz += dz * force;
+          b.dx -= dx * force; b.dy -= dy * force; b.dz -= dz * force;
         });
         for (let i = 0; i < n; i += 1) {
           const node = nodes[i];
-          node.vx -= node.x * 0.02; node.vy -= node.y * 0.02; node.vz -= node.z * 0.02;
-          node.vx *= 0.5; node.vy *= 0.5; node.vz *= 0.5;
-          node.x += node.vx; node.y += node.vy; node.z += node.vz;
+          const move = Math.sqrt(node.dx * node.dx + node.dy * node.dy + node.dz * node.dz) || 0.01;
+          const scale = Math.min(move, temp) / move;   // 一步最多走 temp
+          node.x += node.dx * scale;
+          node.y += node.dy * scale;
+          node.z += node.dz * scale;
         }
+        temp -= cool;
       }
     }
 
     function normalizeNeuronGraph(graph, radius) {
+      const target = Math.max(40, Number(radius) || 120);
       let maxR = 0;
-      graph.nodes.forEach((node) => { maxR = Math.max(maxR, Math.hypot(node.x, node.y, node.z)); });
+      graph.nodes.forEach((node) => {
+        const r = Math.hypot(node.x, node.y, node.z);
+        if (isFinite(r)) maxR = Math.max(maxR, r);
+      });
+      if (!isFinite(maxR) || maxR > 1e6) {
+        // 真发散了就退回球面：宁可整齐，也不能把整张图缩成一个点
+        scatterNeuronBall(graph.nodes, target);
+        return;
+      }
       if (maxR > 0.01) {
-        const target = Math.max(40, Number(radius) || 120);
         const scale = target / maxR;
         graph.nodes.forEach((node) => { node.x *= scale; node.y *= scale; node.z *= scale; });
       }
@@ -3323,10 +3352,13 @@
           .slice(0, 12));
       ctx.font = "12px system-ui, sans-serif";
       ctx.textAlign = "center";
+      // 标签颜色跟主题走：深色模式下写死深色等于看不见
+      const labelColor = (getComputedStyle(document.documentElement)
+        .getPropertyValue("--canvas-label") || "").trim() || "#4a3f52";
       labelNodes.forEach((node) => {
         const label = node.name.length > 8 ? node.name.slice(0, 8) + "…" : node.name;
         ctx.globalAlpha = node.id === activeId || node.id === "bot" ? 1 : 0.72;
-        ctx.fillStyle = "#4a3f52";
+        ctx.fillStyle = labelColor;
         ctx.fillText(label, node.px, node.py + 20 * Math.max(0.62, node.pscale));
       });
       ctx.globalAlpha = 1;
@@ -3341,7 +3373,6 @@
         item.className = "legend-item";
         const dot = document.createElement("i");
         dot.className = "legend-dot";
-        dot.style.background = NEURON_COLORS[tier];
         dot.style.background = NEURON_COLORS[tier];
         item.appendChild(dot);
         item.appendChild(document.createTextNode(NEURON_TIER_LABELS[tier] || tier));
