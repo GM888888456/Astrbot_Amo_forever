@@ -120,3 +120,36 @@ class InvestAwarenessTests(unittest.TestCase):
     def test_invest_line_without_positions(self):
         text = self._plugin()._invest_line()
         self.assertIn("还没有持仓", text)
+
+
+class LeekTests(unittest.TestCase):
+    """韭菜特质：涨了吹牛，亏了死扛、半夜哭。"""
+
+    def _plugin(self, stance, proposal=None):
+        obj = object.__new__(M.HumanCorePlugin)
+        obj.state = type("S", (), {"invest": {"stance": stance, "proposal": proposal or {}}})()
+        return obj
+
+    def test_overconfident_brags(self):
+        lines = " ".join(self._plugin("overconfident")._leek_lines())
+        self.assertIn("巴菲特", lines)
+        self.assertIn("买房", lines)
+
+    def test_overconfident_shows_pending_proposal(self):
+        prop = {"status": "pending", "name": "中国平安", "qty": 100, "amount": 5333}
+        lines = " ".join(self._plugin("overconfident", prop)._leek_lines())
+        self.assertIn("中国平安", lines)
+        self.assertIn("点头", lines)
+
+    def test_rejected_proposal_makes_her_pout(self):
+        prop = {"status": "rejected", "name": "中国平安", "qty": 100, "amount": 5333}
+        lines = " ".join(self._plugin("overconfident", prop)._leek_lines())
+        self.assertIn("驳回", lines)
+
+    def test_hodl_refuses_to_sell(self):
+        lines = " ".join(self._plugin("hodl")._leek_lines())
+        self.assertIn("死扛", lines)
+        self.assertIn("不算亏", lines)
+
+    def test_normal_day_has_no_leek_lines(self):
+        self.assertEqual(self._plugin("")._leek_lines(), [])

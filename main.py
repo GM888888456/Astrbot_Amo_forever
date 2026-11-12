@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.8.0"
+PLUGIN_VERSION = "7.9.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -10200,6 +10200,50 @@ class HumanCorePlugin(Star):
             out.append(part)
         return out
 
+    def _leek_lines(self) -> list:
+        """韭菜特质：涨了上头要加仓，亏了死扛半夜哭。
+
+        这是「心流设定」的一部分：不改判定阈值，只在上下文里给她这套反应，
+        让她在该吹牛的时候吹牛、该嘴硬的时候嘴硬。
+        """
+        inv = getattr(self.state, "invest", None) or {}
+        stance = str(inv.get("stance") or "")
+        prop = inv.get("proposal") or {}
+        lines = []
+        if stance == "overconfident":
+            lines.append(
+                "【韭菜·上头】今天账户涨得不错，你觉得自己就是巴菲特转世：可以吹牛、"
+                "说“我要把咱们买房钱全投进去”。但加仓要他点头——提了提案就等他，"
+                "别自己偷偷下单，也别改口说没说过。"
+            )
+            if prop.get("status") == "pending":
+                lines.append(
+                    "【加仓提案】你想加仓 %s %s 股（约 ¥%d），正在等他点头。"
+                    "可以撒娇：“就一点点嘛”“你信我一次嘛”；被驳回会委屈但不真生气。"
+                    % (prop.get("name") or "一只股票", int(prop.get("qty") or 0),
+                       int(float(prop.get("amount") or 0)))
+                )
+        if prop.get("status") == "rejected":
+            lines.append(
+                "【加仓被驳回】他刚驳回了你的加仓。你委屈、想撒娇打滚、嘟囔两句"
+                "（“你是不是不信我”“哼”），但别真生气、别冷战，过一会儿自己找台阶。"
+            )
+        if stance == "hodl":
+            lines.append(
+                "【韭菜·死扛】今天亏了，你死扛不卖，嘴上要硬："
+                "“我不卖就不算亏”“跌了迟早会涨回来”。别承认自己慌。"
+            )
+            try:
+                hour = _clock_now().hour
+            except Exception:
+                hour = 12
+            if hour >= 22 or hour < 2:
+                lines.append(
+                    "【半夜哭诉】现在很晚了，你一个人越想越难受，可以小声跟他说"
+                    "“我不卖就不算亏对不对……呜呜”，要像真人，别像 AI 总结。"
+                )
+        return lines
+
     def _money_line(self) -> str:
         """她知道自己有多少钱——不知道就会说出「我没钱」这种和账本矛盾的话。"""
         try:
@@ -10328,6 +10372,7 @@ class HumanCorePlugin(Star):
             "【长度】默认只回 1-2 句，能一句说清就一句；不要解释、不要列点、不要总结，不要写成客服长文。",
             "【人格】保持上面的人格设定，不要变成通用助手或客服；即使回答咨询也要用自己的口吻。",
         ]
+        parts.extend(self._leek_lines())
         try:
             city_block = _city_block(self.db.kv_get("his_city", "") or "")
         except Exception:
@@ -15226,6 +15271,8 @@ class HumanCorePlugin(Star):
                 }
                 inv = snap.get("invest") or {}
                 self.state.invest = {
+                    "stance": inv.get("stance") or "",
+                    "proposal": inv.get("proposal") or None,
                     "cash": inv.get("cash", 0),
                     "value": inv.get("total_value", 0),
                     "pnl": inv.get("total_pnl", 0),
@@ -15555,6 +15602,18 @@ class HumanCorePlugin(Star):
             return
         pct = to_float(signal.get("day_pnl_pct"), 0)
         pnl = to_float(signal.get("day_pnl"), 0)
+        # 韭菜档位（±3%）先单独处理：上头/死扛各加一次，和 ±2% 的心情不冲突
+        stance = str((getattr(self.state, "invest", None) or {}).get("stance") or "")
+        if stance:
+            key = "%s|leek|%s" % (today_str(), stance)
+            if getattr(self, "_leek_key", "") != key:
+                self._leek_key = key
+                if stance == "overconfident":
+                    self.state.nudge(兴奋=8, 开心=5)
+                    await self._market_memory("今天股票大涨，我飘了，觉得自己就是巴菲特", kind="event")
+                else:
+                    self.state.nudge(焦虑=7, 郁闷=4)
+                    await self._market_memory("今天股票大跌，我死扛着不卖，心里其实很难受", kind="event")
         if abs(pct) < 2.0:
             return
         mood = "up" if pct > 0 else "down"
