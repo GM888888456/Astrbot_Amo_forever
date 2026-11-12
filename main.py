@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.0.4"
+PLUGIN_VERSION = "8.1.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -8058,6 +8058,113 @@ class HumanCorePlugin(Star):
             item.setdefault("source", "amo_data")
         return items
 
+    # ------------------------------------------------------------------
+    # 生存状态（饱食度 / 水分）：只读 + 只注入，绝不自己改
+    # ------------------------------------------------------------------
+
+    def _vitals(self) -> dict:
+        """当前饱食度/水分。数据在记忆库，这里只读。"""
+        plugin = self._data_plugin()
+        getter = getattr(plugin, "vitals", None) if plugin is not None else None
+        if not callable(getter):
+            return {}
+        try:
+            return getter() or {}
+        except Exception as exc:
+            logger.debug("[amo] 读饱食度失败: %s" % exc)
+            return {}
+
+    def _food_menu(self, limit: int = 6) -> str:
+        """能吃的有什么、多少钱 —— 从金融插件要，别在终端里写价格。"""
+        plugin = self._finance()
+        quote = getattr(plugin, "food_quote", None) if plugin is not None else None
+        if not callable(quote):
+            return ""
+        try:
+            data = quote() or {}
+        except Exception as exc:
+            logger.debug("[amo] 取菜单失败: %s" % exc)
+            return ""
+        rows = []
+        for item in (data.get("ready") or [])[:limit]:
+            rows.append("%s %.0f元回%d" % (
+                item.get("name"), float(item.get("price") or 0),
+                int(item.get("satiety") or 0)))
+        for item in [c for c in (data.get("cook") or []) if c.get("can_cook")][:3]:
+            rows.append("%s（自己做 %.1f元回%d）" % (
+                item.get("name"), float(item.get("cost") or 0),
+                int(item.get("satiety") or 0)))
+        return "；".join(rows)
+
+    def _vitals_hint(self, event) -> str:
+        """饿了/渴了/刚吃过什么，注入给模型。不满足条件时返回空串。"""
+        vitals = self._vitals()
+        if not vitals or not vitals.get("enabled", True):
+            return ""
+        try:
+            satiety = float(vitals.get("satiety") or 0)
+            hydration = float(vitals.get("hydration") or 0)
+        except (TypeError, ValueError):
+            return ""
+        hungry_at = float(vitals.get("hungry_at") or 30)
+        starving_at = float(vitals.get("starving_at") or 10)
+        texts = []
+        if satiety < starving_at:
+            texts.append(
+                "【状态：极度饥饿 %.0f/100】你很久没吃东西了，胃里发空、手有点抖，"
+                "注意力没法集中，容易烦躁，说话也没力气。这一轮必须把吃饭这件事说出来，"
+                "想吃多少钱的照实说；没钱就直说没钱，不要假装不饿。" % satiety)
+            self._spawn(self._maybe_hunger_sick())
+        elif satiety < hungry_at:
+            texts.append(
+                "【状态：饥饿 %.0f/100】你有点饿了，注意力开始散，想花钱买点吃的。"
+                "可以随口提一句，别硬撑。" % satiety)
+        if hydration < hungry_at:
+            texts.append("【状态：口渴 %.0f/100】你渴了，想喝水或者买杯喝的。" % hydration)
+        try:
+            last = self.db.kv_get("last_meal", {}) or {}
+        except Exception:
+            last = {}
+        try:
+            age = now_ts() - float(last.get("ts") or 0)
+        except Exception:
+            age = 1e9
+        if last and age < 6 * 3600:
+            texts.append("【你刚才吃了】%d 分钟前你吃了%s。别否认，也别装作没吃过。" % (
+                max(1, int(age // 60)), str(last.get("dish") or "点东西")))
+        if texts:
+            menu = self._food_menu()
+            if menu:
+                texts.append("【现在能吃的】" + menu + "。要用 amo_eat 工具去买或去做，别自己编价格。")
+        return ("\n" + "\n".join(texts)) if texts else ""
+
+    async def _maybe_hunger_sick(self) -> None:
+        """饿到极限 → 给医疗插件一个信号，让她有机会真的病一场。
+
+        6 小时只触发一次；医疗插件没装就什么都不做（不许自己造病）。
+        """
+        plugin = self._medical()
+        fall = getattr(plugin, "fall_sick", None) if plugin is not None else None
+        if not callable(fall):
+            return
+        try:
+            last = float(self.db.kv_get("hunger_sick_ts", 0) or 0)
+        except Exception:
+            last = 0.0
+        if last and now_ts() - last < 6 * 3600:
+            return
+        try:
+            result = fall("gastro") or {}
+        except Exception as exc:
+            logger.debug("[amo] 低饱食触发就医失败: %s" % exc)
+            return
+        try:
+            self.db.kv_set("hunger_sick_ts", now_ts())
+        except Exception:
+            pass
+        if result.get("ok"):
+            logger.info("[amo] 饿到极限，她病了一场：%s" % result.get("name"))
+
     def _data_memory_count(self, uid):
         """状态页记忆条数：以「记忆终端」为准，终端没有才数外挂插件。
 
@@ -10869,6 +10976,10 @@ class HumanCorePlugin(Star):
                         ("，附了一句「%s」" % note_text[:40]) if note_text else "",
                     )
                 )
+            try:
+                body += self._vitals_hint(event)
+            except Exception as exc:
+                logger.debug("[amo] 生存状态提示失败: %s" % exc)
             parts = getattr(req, "extra_user_content_parts", None)
             if parts is None:
                 return
@@ -10910,6 +11021,57 @@ class HumanCorePlugin(Star):
             await self._maybe_share_image(event)
         except Exception as exc:
             logger.debug("[amo] 主动分享入口异常: %s" % exc)
+
+    @filter.llm_tool(name="amo_eat")
+    async def amo_eat(self, event, dish: str = "", method: str = "order") -> str:
+        """吃东西、喝水、买菜。饿了想买点吃的、想自己做饭、想喝点什么，都走这个工具。
+
+        Args:
+            dish(string): 吃什么/喝什么/买什么，用菜单里的名字（泡面、外卖、酸菜鱼、番茄炒蛋盖饭、水、奶茶、鸡蛋…）。
+            method(string): order=买现成的（默认）/ cook=用家里食材自己做 / drink=喝水喝饮料 / grocery=只买食材。
+        """
+        plugin = self._finance()
+        propose = getattr(plugin, "food_propose", None) if plugin is not None else None
+        if not callable(propose):
+            return "我现在没法买东西（金融插件没连上）。"
+        try:
+            result = propose(str(dish or "").strip(), str(method or "order").strip()) or {}
+        except Exception as exc:
+            logger.debug("[amo] amo_eat 失败: %s" % exc)
+            return "买不了，等会儿再说。"
+        if not result.get("ok"):
+            code = str(result.get("code") or "")
+            if code == "no_money":
+                return "买不起：%s 要 %.1f 元，还差 %.1f 元。" % (
+                    result.get("dish") or dish, float(result.get("price") or 0),
+                    float(result.get("short") or 0))
+            if code == "need_grocery":
+                miss = "、".join(
+                    "%s 缺 %.1f" % (m.get("item"), float(m.get("need") or 0) - float(m.get("have") or 0))
+                    for m in (result.get("missing") or []))
+                return "家里没食材，做不了：%s。要先去买（method=grocery）。" % miss
+            return "没成：%s" % (result.get("reason") or "不知道怎么了")
+        dish_name = str(result.get("dish") or dish)
+        mode = str(result.get("method") or method)
+        try:
+            self.db.kv_set("last_meal", {"ts": now_ts(), "dish": dish_name, "method": mode})
+        except Exception:
+            pass
+        venv = result.get("vitals") or {}
+        if mode == "cook":
+            head = "自己做了%s，食材从家里拿的" % dish_name
+        elif mode == "drink":
+            head = "喝了%s" % dish_name
+        elif mode == "grocery":
+            head = "去买了食材，一共 %.1f 元" % float(result.get("total") or 0)
+        else:
+            head = "吃了%s，花了 %.1f 元" % (dish_name, float(result.get("price") or 0))
+        tail = []
+        if venv.get("satiety") is not None:
+            tail.append("饱食度 %.0f" % float(venv.get("satiety") or 0))
+        if result.get("balance") is not None:
+            tail.append("余额 %.0f 元" % float(result.get("balance") or 0))
+        return head + ("（" + "，".join(tail) + "）" if tail else "") + "。"
 
     @filter.llm_tool(name="schedule_view")
     async def schedule_view(self, event, day: str = "today") -> str:
