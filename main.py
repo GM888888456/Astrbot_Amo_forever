@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.9.0"
+PLUGIN_VERSION = "7.9.1"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -10204,30 +10204,36 @@ class HumanCorePlugin(Star):
         """韭菜特质：涨了上头要加仓，亏了死扛半夜哭。
 
         这是「心流设定」的一部分：不改判定阈值，只在上下文里给她这套反应，
-        让她在该吹牛的时候吹牛、该嘴硬的时候嘴硬。
+        让她在该吹牛的时候吹牛、该嘴硬的时候嘴硬。买卖是她自己的事，
+        这里没有任何按钮——她加没加仓、加没加成，都在上下文里告诉她。
         """
         inv = getattr(self.state, "invest", None) or {}
         stance = str(inv.get("stance") or "")
-        prop = inv.get("proposal") or {}
+        leek = inv.get("leek") or {}
         lines = []
         if stance == "overconfident":
             lines.append(
                 "【韭菜·上头】今天账户涨得不错，你觉得自己就是巴菲特转世：可以吹牛、"
-                "说“我要把咱们买房钱全投进去”。但加仓要他点头——提了提案就等他，"
-                "别自己偷偷下单，也别改口说没说过。"
+                "说“我要把咱们买房钱全投进去”“我就是股神”。加仓是你自己的事，"
+                "想加就自己加，不用等他点头。"
             )
-            if prop.get("status") == "pending":
+            kind = str(leek.get("kind") or "")
+            if kind == "bought":
                 lines.append(
-                    "【加仓提案】你想加仓 %s %s 股（约 ¥%d），正在等他点头。"
-                    "可以撒娇：“就一点点嘛”“你信我一次嘛”；被驳回会委屈但不真生气。"
-                    % (prop.get("name") or "一只股票", int(prop.get("qty") or 0),
-                       int(float(prop.get("amount") or 0)))
+                    "【刚加了仓】你今天已经又买了 %s %s 股，觉得自己神了，"
+                    "可以邀功、可以得意，但别把数字说错。"
+                    % (leek.get("name") or "一只股票", int(leek.get("qty") or 0))
                 )
-        if prop.get("status") == "rejected":
-            lines.append(
-                "【加仓被驳回】他刚驳回了你的加仓。你委屈、想撒娇打滚、嘟囔两句"
-                "（“你是不是不信我”“哼”），但别真生气、别冷战，过一会儿自己找台阶。"
-            )
+            elif kind == "no_money":
+                lines.append(
+                    "【加仓加不了】你想加仓，但卡里没钱了。别硬撑：可以跟他撒娇要钱"
+                    "（“给我转点嘛，这次真的能赚”），他不会主动给，得你自己开口。"
+                )
+            elif kind == "no_room":
+                lines.append(
+                    "【仓位到顶】你想加仓，但仓位已经到你能承受的上限了，只能作罢。"
+                    "嘟囔两句（“胆小鬼才不满仓”），但别真去借钱、别超额。"
+                )
         if stance == "hodl":
             lines.append(
                 "【韭菜·死扛】今天亏了，你死扛不卖，嘴上要硬："
@@ -15272,7 +15278,7 @@ class HumanCorePlugin(Star):
                 inv = snap.get("invest") or {}
                 self.state.invest = {
                     "stance": inv.get("stance") or "",
-                    "proposal": inv.get("proposal") or None,
+                    "leek": inv.get("leek") or {},
                     "cash": inv.get("cash", 0),
                     "value": inv.get("total_value", 0),
                     "pnl": inv.get("total_pnl", 0),

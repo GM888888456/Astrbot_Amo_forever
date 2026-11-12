@@ -2,7 +2,7 @@ name: Astrbot_Amo_forever
 display_name: 我想永远陪着你-终端
 desc: 我想永远陪着你-终端：人格与聊天本体，动态日程、心流判定、十维心情、关系网、方言库
 short_desc: 我想永远陪着你-终端
-version: 7.9.0
+version: 7.9.1
 author: 墨辞烟
 astrbot_version: ">=4.5.7"
 repo: https://github.com/GM888888456/Astrbot_Amo_forever/

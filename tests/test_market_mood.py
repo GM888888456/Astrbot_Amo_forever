@@ -125,9 +125,9 @@ class InvestAwarenessTests(unittest.TestCase):
 class LeekTests(unittest.TestCase):
     """韭菜特质：涨了吹牛，亏了死扛、半夜哭。"""
 
-    def _plugin(self, stance, proposal=None):
+    def _plugin(self, stance, leek=None):
         obj = object.__new__(M.HumanCorePlugin)
-        obj.state = type("S", (), {"invest": {"stance": stance, "proposal": proposal or {}}})()
+        obj.state = type("S", (), {"invest": {"stance": stance, "leek": leek or {}}})()
         return obj
 
     def test_overconfident_brags(self):
@@ -135,16 +135,23 @@ class LeekTests(unittest.TestCase):
         self.assertIn("巴菲特", lines)
         self.assertIn("买房", lines)
 
-    def test_overconfident_shows_pending_proposal(self):
-        prop = {"status": "pending", "name": "中国平安", "qty": 100, "amount": 5333}
-        lines = " ".join(self._plugin("overconfident", prop)._leek_lines())
-        self.assertIn("中国平安", lines)
-        self.assertIn("点头", lines)
+    def test_overconfident_after_buying(self):
+        leek = {"kind": "bought", "name": "平安银行", "qty": 500}
+        lines = " ".join(self._plugin("overconfident", leek)._leek_lines())
+        self.assertIn("平安银行", lines)
+        self.assertIn("邀功", lines)
 
-    def test_rejected_proposal_makes_her_pout(self):
-        prop = {"status": "rejected", "name": "中国平安", "qty": 100, "amount": 5333}
-        lines = " ".join(self._plugin("overconfident", prop)._leek_lines())
-        self.assertIn("驳回", lines)
+    def test_no_money_makes_her_ask_for_a_top_up(self):
+        leek = {"kind": "no_money"}
+        lines = " ".join(self._plugin("overconfident", leek)._leek_lines())
+        self.assertIn("没钱", lines)
+        self.assertIn("转点", lines)
+
+    def test_no_room_sulks_but_obeys(self):
+        leek = {"kind": "no_room"}
+        lines = " ".join(self._plugin("overconfident", leek)._leek_lines())
+        self.assertIn("仓位到顶", lines)
+        self.assertIn("别真去借钱", lines)
 
     def test_hodl_refuses_to_sell(self):
         lines = " ".join(self._plugin("hodl")._leek_lines())
