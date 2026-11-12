@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.6.4"
+PLUGIN_VERSION = "7.6.5"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -4340,6 +4340,39 @@ class HumanState:
 # ---------------------------------------------------------------------------
 # LLM：人格、对话、润色、世界观、日程、判断
 # ---------------------------------------------------------------------------
+
+#: 人格里写薪资的常见说法：月薪/工资/年薪 + 数字 + 万/k
+_SALARY_RE = re.compile(
+    r"(月薪|月工资|工资|薪资|年薪|收入)\s*[:：约是]?\s*(\d+(?:\.\d+)?)\s*(万|w|k|千)?",
+    re.IGNORECASE,
+)
+
+
+def extract_salary(text, default: float = 0.0) -> float:
+    """从人格文本里读月薪（税前）。读不到返回 default。
+
+    支持「月薪 8000」「工资 1.2 万」「年薪 20 万」（÷12）。数字明显不合理就忽略——
+    宁可回落到城市平均，也不要把「工作 3 年」当成月薪 3 万。
+    """
+    value = 0.0
+    for match in _SALARY_RE.finditer(str(text or "")):
+        word = (match.group(1) or "").lower()
+        try:
+            amount = float(match.group(2))
+        except (TypeError, ValueError):
+            continue
+        unit = (match.group(3) or "").lower()
+        if unit in ("万", "w"):
+            amount *= 10000
+        elif unit in ("k", "千"):
+            amount *= 1000
+        if "年薪" in word:
+            amount /= 12.0
+        if not (1000 <= amount <= 2000000):
+            continue
+        value = max(value, amount)
+    return round(value, 2) if value else float(default or 0.0)
+
 
 def extract_persona_name(persona):
     """从 AstrBot Personality 的 name / system prompt 中取角色名。"""
@@ -11086,6 +11119,10 @@ class HumanCorePlugin(Star):
         except Exception as exc:
             logger.debug("[amo] 财务同步失败: %s" % exc)
         try:
+            await self._maybe_push_salary()
+        except Exception as exc:
+            logger.debug("[amo] 薪资同步失败: %s" % exc)
+        try:
             await self._maybe_treat()
         except Exception as exc:
             logger.debug("[amo] 就医判断失败: %s" % exc)
@@ -15383,6 +15420,39 @@ class HumanCorePlugin(Star):
             pass
         return None
 
+    async def _maybe_push_salary(self) -> None:
+        """把人格里的月薪同步给金融。
+
+        人格没写薪资是常态：这时不推，金融按城市平均发。人格改过就重新读一次。
+        """
+        now = now_ts()
+        if now - to_float(getattr(self, "_salary_checked_at", 0), 0) < 600:
+            return
+        self._salary_checked_at = now
+        plugin = self._finance()
+        setter = getattr(plugin, "set_salary", None) if plugin is not None else None
+        if not callable(setter):
+            return
+        umo = self._last_umo or self._first_private_umo()
+        text = ""
+        try:
+            if self.llm is not None and umo:
+                text = await self.llm.persona(umo) or ""
+        except Exception as exc:
+            logger.debug("[amo] 读人格失败（薪资）: %s" % exc)
+            return
+        gross = extract_salary(text)
+        if gross <= 0:
+            return
+        try:
+            result = await asyncio.to_thread(setter, gross, "persona")
+        except Exception as exc:
+            logger.debug("[amo] 推送月薪失败: %s" % exc)
+            return
+        if isinstance(result, dict) and result.get("skipped"):
+            return
+        logger.info("[amo] 从人格读到月薪 %.0f，已交给金融" % gross)
+
     async def _maybe_treat(self) -> None:
         """换成医疗插件管的病情后，由它决定治不治、钱够不够。
 
@@ -15404,9 +15474,13 @@ class HumanCorePlugin(Star):
             return
         self._treat_marked = key
         try:
-            result = await medical.treat()
+            result = await medical.treat(auto=True)
         except Exception as exc:
             logger.warning("[amo] 就医失败: %s" % exc)
+            return
+        if result.get("skipped"):
+            # 手动模式 / 她自己先扛着：都不是失败，不该记成焦虑
+            logger.debug("[amo] 这次没去看病：%s" % result.get("reason"))
             return
         if result.get("ok"):
             logger.info("[amo] 去看了病：%s，自付 %.0f"
