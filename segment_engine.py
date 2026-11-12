@@ -245,15 +245,7 @@ class SegmentEngine:
             self._remember_bot_text(event, full_segmented_text)
             logger.info(f"[amo] 分段回复 -> {event.unified_msg_origin}: {full_segmented_text[:300]}")
             logger.info(f"[amo] 分段回复完成，共 {len(segments)} 段")
-            # 管道钩子不一定覆盖手工发送：主动告诉心流「这一轮回了」，别让她被暂停 60 秒
-            try:
-                plugin = getattr(self, "plugin", None) or getattr(self, "p", None)
-                heartflow = getattr(plugin, "heartflow", None)
-                marker = getattr(heartflow, "mark_replied", None)
-                if callable(marker):
-                    marker(event.unified_msg_origin, full_segmented_text)
-            except Exception:
-                pass
+            self._notify_heartflow(event, full_segmented_text)
             return True
 
         except Exception as e:
@@ -270,6 +262,21 @@ class SegmentEngine:
         task = asyncio.create_task(self._send_proactive_rest(event, segments))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _notify_heartflow(self, event, text: str = "") -> None:
+        """管道钩子不一定覆盖手工发送：主动告诉心流「这一轮回了」。
+
+        不通知的话，`判断暂停` 会一直挂到超时（默认 60 秒），
+        她刚插完一句话就哑一分钟——看起来就是「不怎么主动说话了」。
+        """
+        try:
+            plugin = getattr(self, "plugin", None) or getattr(self, "p", None)
+            heartflow = getattr(plugin, "heartflow", None)
+            marker = getattr(heartflow, "mark_replied", None)
+            if callable(marker):
+                marker(getattr(event, "unified_msg_origin", ""), text)
+        except Exception:
+            pass
 
     async def _send_proactive_rest(self, event: AstrMessageEvent, segments: list) -> None:
         """后台逐段发送主动消息剩余段，保留打字节奏。
