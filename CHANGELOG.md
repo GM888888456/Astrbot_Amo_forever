@@ -1,5 +1,20 @@
 # Changelog
 
+## 7.5.7（私聊要语音/照片更听话）
+
+- 语音判定放宽：`VOICE_ASK_WORDS` 从 11 个补到 40 多个（念一句 / 唱一句 / 用语音 /
+  出声 / 亲口 / 说爱我 / 叫我一声…），并新增 `VOICE_ASK_PATTERNS` 七条正则兜底，
+  覆盖「想听听你的声音」「能用语音说我爱你嘛」这类不靠固定词的句式；
+- 照片触发补词：`拍给我看看` `拍给我` `拍照给我` `照片发我` `发我一张` `拍来看看`
+  `想看看你` 等进 `DEFAULT_EXPLICIT_KEYWORDS`，`_EXPLICIT_CLEAN_RE` 同步清掉这些词和
+  「能不能 / 可不可以」这类请求前缀；`啥` 进 `QUESTION_WORDS`，让「吃的啥，能不能拍给我
+  看看」被当成「没说要拍什么」→ 按她此刻的真实场景自拍；
+- 照片不吃冷却：新增 `PHOTO_ASK_WORDS` / `_is_photo_ask()`，`_check_limits(explicit=...)`
+  对明着要照片的请求跳过 `draw_cooldown_minutes`（每小时/每天上限不变）；
+- 出图兜底：`draw_engine._generate()` 和 `photo_engine._share()` 在找不到万象画卷
+  （OmniDraw）时改调 `Astrbot_Amo_Image.draw_for()`（新增 `plugin._image_bytes()` 包装，
+  180 秒超时、异常只记日志），修掉「没找到万象画卷，画不了」导致照片永远发不出来的问题。
+
 ## 7.5.6（要语音就只发语音）
 
 - 他这轮明说要语音时不再等心流打分：直接注入「必须调用 amo_speak」的硬要求，

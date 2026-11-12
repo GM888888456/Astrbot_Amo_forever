@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import os
 import re
@@ -80,24 +81,37 @@ DEFAULT_TOPIC_KEYWORDS = (
 
 DEFAULT_EXPLICIT_KEYWORDS = (
     "画一张,画个,画一下,画一幅,画张,给我画,帮我画,替我画,来一张,来张,发张图,发个图,"
-    "发一张,拍张,拍一张,拍照给我看看,拍给我看,照片给我看看,发张照片,自拍,画我,来点图"
+    "发一张,拍张,拍一张,拍照给我看看,拍照给我,拍给我看,拍给我看看,拍给我,"
+    "照片给我看看,照片发我,发张照片,发张自拍,来张照片,发我一张,"
+    "给我拍一张,拍一张给我,拍个照给我,拍来看看,拍拍看,"
+    "想看看你,让我看看你,自拍,画我,来点图"
+)
+
+#: 命中这些词就当他是在要照片：明着要照片不该被普通冷却拦住（每小时/每天上限照旧）
+PHOTO_ASK_WORDS = (
+    "拍给我", "拍照", "拍张", "拍一张", "拍个照", "拍来看看", "拍拍看", "拍一下",
+    "照片", "自拍", "想看看你", "让我看看你", "发张照",
 )
 
 _EXPLICIT_CLEAN_RE = re.compile(
-    r"(请|麻烦)?(你)?(给我|帮我|替我)?"
-    r"(画一张|画一个|画一幅|画一下|画张|画个|来一张|来张|发张图|发个图|发一张|"
-    r"拍照给我看看|拍给我看|照片给我看看|发张照片|拍张|拍一张|自拍|给我看看|画|发张|发个|来张)"
+    r"(请|麻烦)?(你)?(能不能|可不可以|可以|要不要)?(给我|帮我|替我)?"
+    r"(拍照给我看看|拍照给我|照片给我看看|照片发我|发张照片|发张自拍|来张照片|"
+    r"给我拍一张|拍一张给我|拍个照给我|拍给我看看|拍给我看|拍给我|拍来看看|拍拍看|"
+    r"想看看你|让我看看你|发我一张|画一张|画一个|画一幅|画一下|画张|画个|"
+    r"来一张|来张|发张图|发个图|发一张|拍张|拍一张|自拍|给我看看|画|发张|发个|来张)"
 )
 _TAIL_PUNCT_RE = re.compile(r"[\s，,。.！!？?~～…]+$")
 _FILLER_TAIL_RE = re.compile(r"(吧|呀|啊|呢|啦|哦|哈|嘛|咯)+$")
 
 QUESTION_WORDS = (
     "吗", "呢", "怎么样", "如何", "在干吗", "干嘛", "在做什么", "做什么", "开心",
-    "好不好", "是不是", "在不在", "在哪", "玩得", "有没有", "什么", "哪里",
+    "好不好", "是不是", "在不在", "在哪", "玩得", "有没有", "什么", "啥", "哪里",
 )
 
 FILLER_WORDS = (
     "开心", "在呀", "好呀", "是呀", "对呀", "还行", "还好", "哈哈", "嘿嘿",
+    "老婆", "老公", "宝贝", "能不能", "可不可以", "可以", "要不要",
+    "看看", "看一下", "拍", "照片", "图片",
     "呀", "啊", "啦", "哦", "嗯", "呢", "吧", "嘛",
 )
 
@@ -228,12 +242,19 @@ class DrawEngine:
                 _note_swallowed("draw_engine.DrawEngine.is_owner", _amo_exc)
         return False
 
-    def _check_limits(self, uid):
+    @staticmethod
+    def _is_photo_ask(text):
+        body = str(text or "")
+        return any(word in body for word in PHOTO_ASK_WORDS)
+
+    def _check_limits(self, uid, explicit=False):
         """返回 None 表示可以画；否则返回跳过原因。"""
         now = time.monotonic()
         cooldown = max(0, self._cfg_int("draw_cooldown_minutes", 30)) * 60
         last = self._last_draw.get(uid, 0.0)
-        if cooldown and last and now - last < cooldown:
+        # 他明着要照片时不吃冷却（每小时/每天上限照旧兜着），
+        # 否则「刚发过一张」的 30 分钟里要图只会石沉大海。
+        if cooldown and last and now - last < cooldown and not explicit:
             return "冷却中（%d 秒）" % int(cooldown - (now - last))
         times = list(self._draw_times.get(uid, []))
         hour = [ts for ts in times if now - ts < 3600]
@@ -561,7 +582,7 @@ class DrawEngine:
                     "cached": cached, "cache_key": cache_key}
         if umo and umo in self._inflight:
             return self._skip("上一张还在画")
-        reason = self._check_limits(uid)
+        reason = self._check_limits(uid, explicit=self._is_photo_ask(text))
         if reason:
             if self.debug:
                 logger.info("[amo] 画图跳过：%s（uid=%s）" % (reason, uid))
@@ -697,8 +718,21 @@ class DrawEngine:
     async def _generate(self, event, prompt, selfie=False):
         omni = self._find_omni()
         if omni is None:
-            logger.warning("[amo] 没找到万象画卷（astrbot_plugin_omnidraw），画不了。")
-            return None
+            # 没装万象画卷：退回生图插件（Astrbot_Amo_Image）。以前这里直接放弃，
+            # 于是「拍给我看看」只会换来一句「等我拍给你」和一条 WARN。
+            helper = getattr(self.plugin, "_image_bytes", None)
+            data = None
+            if callable(helper):
+                data = await helper(
+                    prompt,
+                    str(getattr(event, "unified_msg_origin", "") or ""),
+                    str(self.plugin._canonical_uid(event) or ""),
+                )
+            if not data:
+                self._last_error = "万象画卷和生图插件都没出图"
+                logger.warning("[amo] 没找到万象画卷，生图插件也没出图。")
+                return None
+            return {"data_url": "data:image/png;base64," + base64.b64encode(data).decode()}
         args = {"prompt": prompt, "count": 1, "event": event, "record_usage": True}
         if selfie:
             args["mode"] = "selfie"

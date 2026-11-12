@@ -422,5 +422,59 @@ class RunTests(unittest.TestCase):
         self.assertIn("没开", engine.manual(FakeEvent("一碗面"), "一碗面"))
 
 
+class PhotoAskTests(unittest.TestCase):
+    """明着要照片：要认得出来，而且不吃普通冷却。"""
+
+    def test_photo_ask_words(self):
+        engine, _ = engine_for()
+        self.assertTrue(engine._is_photo_ask("老婆吃的啥，能不能拍给我看看"))
+        self.assertTrue(engine._is_photo_ask("拍照给我"))
+        self.assertFalse(engine._is_photo_ask("给我画一碗牛肉面"))
+
+    def test_photo_ask_ignores_cooldown(self):
+        engine, _ = engine_for({"draw_cooldown_minutes": 30})
+        event = FakeEvent("能不能拍给我看看")
+        self.assertIsNotNone(engine.decide(event, "好呀"))
+        engine._last_draw[event.uid] = __import__("time").monotonic()
+        self.assertIsNotNone(engine.decide(event, "好呀"))
+
+    def test_topic_draw_still_respects_cooldown(self):
+        engine, _ = engine_for({"draw_cooldown_minutes": 30})
+        event = FakeEvent("晚上吃啥")
+        self.assertIsNotNone(engine.decide(event, "面条吧"))
+        engine._last_draw[event.uid] = __import__("time").monotonic()
+        self.assertIsNone(engine.decide(event, "面条吧"))
+
+    def test_vague_photo_ask_falls_back_to_previous_line(self):
+        engine, plugin = engine_for()
+        event = FakeEvent("老婆吃的啥，能不能拍给我看看")
+        plugin.db.by_uid["u1"] = [{"role": "bot", "content": "今天中午吃了牛肉面"}]
+        plan = engine.decide(event, "好呀")
+        self.assertIsNotNone(plan)
+        self.assertTrue(plan["prompt"].startswith("自拍"))
+        self.assertIn("牛肉面", plan["prompt"])
+
+
+class FallbackTests(unittest.TestCase):
+    """没装万象画卷时改走生图插件，别一张都出不来。"""
+
+    def test_missing_omni_falls_back_to_image_plugin(self):
+        engine, plugin = engine_for({}, None)
+        plugin.context.omni = None
+        prompts = []
+
+        async def fake_bytes(prompt, umo="", uid=""):
+            prompts.append(prompt)
+            return b"\x89PNG"
+
+        plugin._image_bytes = fake_bytes
+        event = FakeEvent("给我画一碗面")
+        engine.maybe_after_reply(event, "好呀")
+        asyncio.run(plugin.tasks[0])
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("一碗面", prompts[0])
+        self.assertEqual(len(event.sent), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -649,23 +649,37 @@ class PhotoEngine:
             logger.warning("[amo] 照片发送失败: %s" % exc)
             return False
 
+    async def _generate_with(self, omni, profile, prompt, selfie):
+        """有万象画卷就用它；没装就退回生图插件（Astrbot_Amo_Image）。"""
+        if omni is not None:
+            return await self._generate(omni, prompt, selfie)
+        helper = getattr(self.plugin, "_image_bytes", None)
+        if not callable(helper):
+            logger.warning("[amo] 没有万象画卷，也没有生图插件，照片发不出去。")
+            return None
+        data = await helper(prompt, self._target_umo(profile), "")
+        if not data:
+            logger.warning("[amo] 生图插件没出图：%s" % prompt)
+            return None
+        return {"data_url": "data:image/png;base64," + base64.b64encode(data).decode()}
+
     async def _share(self, kind, scene, profile):
         activity = self._activity()
         omni = self._find_omni()
         if omni is None:
-            logger.warning("[amo] 没有万象画卷，照片发不出去。")
-            return False
+            logger.info("[amo] 没装万象画卷，改用生图插件出图。")
         selfie = self._pick_selfie(kind)
-        if selfie and not self._selfie_ready(omni):
+        if selfie and omni is not None and not self._selfie_ready(omni):
             selfie = False
         prompt = self._selfie_prompt_for(kind, scene, activity) if selfie else self._prompt_for(kind, scene, activity)
         if self._cfg_bool("photo_dry_run", False):
             logger.info("[amo] 照片（dry-run）%s：%s" % ("自拍" if selfie else "街景", prompt))
             return False
-        item = await self._generate(omni, prompt, selfie)
+        item = await self._generate_with(omni, profile, prompt, selfie)
         if not item and selfie:
             # 自拍链路失败（没参考图/节点不支持）→ 退回普通图，别让这一次白掷
-            item = await self._generate(omni, self._prompt_for(kind, scene, activity), False)
+            item = await self._generate_with(
+                omni, profile, self._prompt_for(kind, scene, activity), False)
         if not item:
             self._stats["failed"] += 1
             return False

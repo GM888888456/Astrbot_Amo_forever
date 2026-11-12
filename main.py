@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.5.6"
+PLUGIN_VERSION = "7.5.7"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -10565,9 +10565,28 @@ class HumanCorePlugin(Star):
         )
         return "\n".join(parts)
 
+    #: 明确要语音的词。宁可多认几个：命中只是「给她一个必须用语音的理由」，
+    #: 合成在后台跑、没有额外成本；漏认的代价是他明明开口要了却没声音。
     VOICE_ASK_WORDS = (
-        "语音", "发条音", "念给我", "读给我", "读一下", "说句话", "说给我听",
-        "用声音", "你的声音", "想听你说", "想听听", "录音",
+        "语音", "发条音", "发个音", "发段音", "录音", "录一段", "录个",
+        "念给我", "念一句", "念一段", "读给我", "读一下", "读一句",
+        "说句话", "说一句", "说一段", "说给我听", "讲给我听", "用声音",
+        "你的声音", "想听你说", "想听听", "听听你", "听你说话", "听你唱",
+        "唱给我", "唱一句", "唱首歌", "哼一句", "哼给我",
+        "开语音", "语音条", "发语音", "用语音", "出声", "亲口",
+        "叫一声", "叫我一声", "喊我一声",
+        "说爱我", "说你爱我", "说喜欢我", "说想我", "亲口说",
+    )
+
+    #: 上面那串词漏掉的句式（「想听听你的声音」「用语音说我爱你」…）用正则兜一层。
+    VOICE_ASK_PATTERNS = (
+        r"(听|想听|听听).{0,4}(声音|嗓音)",
+        r"(声音|嗓音|语音).{0,6}(说|讲|唱|念|录|发|来一)",
+        r"(说|讲|念|唱|哼|读).{0,4}(给我听|给你听|听听)",
+        r"(用|发|来|录|开).{0,3}(语音|一段音|一条语音)",
+        r"(叫|喊)(我)?(一声|一下)",
+        r"(说|讲).{0,3}(爱我|喜欢我|想我)",
+        r"(亲口|出声|开口).{0,6}(说|讲|唱|念)",
     )
 
     def _user_asks_voice(self, text: str) -> bool:
@@ -10575,7 +10594,9 @@ class HumanCorePlugin(Star):
         body = str(text or "")
         if not body:
             return False
-        return any(word in body for word in self.VOICE_ASK_WORDS)
+        if any(word in body for word in self.VOICE_ASK_WORDS):
+            return True
+        return any(re.search(pattern, body) for pattern in self.VOICE_ASK_PATTERNS)
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req):
@@ -15163,6 +15184,26 @@ class HumanCorePlugin(Star):
             parts.append(doing[:30])
         parts.extend(["自然光", "手机前置摄像头", "生活感"])
         return "，".join(parts)
+
+    async def _image_bytes(self, prompt, umo="", uid=""):
+        """出图兜底入口：让生图插件（Astrbot_Amo_Image）直接吐图片字节。
+
+        画图/照片引擎原先只认万象画卷（OmniDraw），机器上没装就一张都出不来；
+        有了这个兜底，装万象画卷或装生图插件都能出图。
+        """
+        plugin = self._image_plugin()
+        if plugin is None:
+            return None
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            return None
+        try:
+            return await asyncio.wait_for(
+                plugin.draw_for(str(umo or ""), str(uid or ""), prompt), timeout=180
+            )
+        except Exception as exc:
+            logger.warning("[amo] 生图插件出图失败: %s" % exc)
+            return None
 
     async def _draw_for_panel(self, prompt):
         """调生图插件出一张图，返回 data URL（面板直接显示）。"""
