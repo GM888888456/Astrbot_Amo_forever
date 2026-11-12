@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.6.5"
+PLUGIN_VERSION = "7.6.6"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -5753,6 +5753,11 @@ class HumanCorePlugin(Star):
                     await self._sync_with_data_plugin()
             except Exception as exc:
                 logger.debug("[amo] 加载完成补同步失败: %s" % exc)
+            # 金融第一次发薪会等 20 秒，这里先把人格里的月薪推过去，别让它按城市平均先发一遍
+            try:
+                await self._maybe_push_salary()
+            except Exception as exc:
+                logger.debug("[amo] 加载完成推月薪失败: %s" % exc)
 
     def _record_tokens(self, kind, provider, response):
         """把这次调用的 token 记进自己的表；provider_stats 只统计主回复，这里补内部调用。"""
