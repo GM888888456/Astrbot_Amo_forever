@@ -486,13 +486,13 @@
   "hf_reply_threshold": {
     "description": "【心流】基础回复阈值",
     "type": "float",
-    "default": 0.6,
+    "default": 0.55,
     "slider": {
       "min": 0,
       "max": 1,
       "step": 0.05
     },
-    "hint": "综合评分达到此阈值才会主动回复（开启动态阈值后作为基准值）"
+    "hint": "综合评分达到此阈值才会主动回复（开启动态阈值后作为基准值）。调高更矜持，调低更爱插话。"
   },
   "hf_enable_dynamic_threshold": {
     "description": "【心流】启用动态阈值",
@@ -503,13 +503,13 @@
   "hf_dynamic_threshold_max": {
     "description": "【心流】动态阈值上限",
     "type": "float",
-    "default": 0.85,
+    "default": 0.75,
     "slider": {
       "min": 0.1,
       "max": 1,
       "step": 0.05
     },
-    "hint": "群聊非常活跃时阈值上限，越高等于越不想说话"
+    "hint": "群聊非常活跃时阈值上限，越高等于越不想说话。0.75 保证热闹时也偶尔接一句"
   },
   "hf_dynamic_threshold_min": {
     "description": "【心流】动态阈值下限",
@@ -520,7 +520,7 @@
       "max": 1,
       "step": 0.05
     },
-    "hint": "群聊冷清时阈值下限，越低等于越想说话"
+    "hint": "群聊冷清时阈值下限，越低等于越想说话。0.35 大约对应「十条里接两三条」"
   },
   "hf_dynamic_activity_window": {
     "description": "【心流】活跃度计算窗口（秒）",
