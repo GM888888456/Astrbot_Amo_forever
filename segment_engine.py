@@ -247,7 +247,8 @@ class SegmentEngine:
             logger.info(f"[amo] 分段回复完成，共 {len(segments)} 段")
             # 管道钩子不一定覆盖手工发送：主动告诉心流「这一轮回了」，别让她被暂停 60 秒
             try:
-                heartflow = getattr(getattr(self, "p", None), "heartflow", None)
+                plugin = getattr(self, "plugin", None) or getattr(self, "p", None)
+                heartflow = getattr(plugin, "heartflow", None)
                 marker = getattr(heartflow, "mark_replied", None)
                 if callable(marker):
                     marker(event.unified_msg_origin, full_segmented_text)
