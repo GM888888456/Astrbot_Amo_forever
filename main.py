@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.6.7"
+PLUGIN_VERSION = "7.6.8"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -533,6 +533,10 @@ FORCED_ON_CONFIG_KEYS = frozenset({
     "enable_group_reply", "enable_private_reply", "hf_enable_heartflow",
     "seg_enable", "gift_enable", "diary_enabled", "usage_stats_enabled",
 })
+
+#: 面板不展示、但仍可从配置文件改的键。
+#: 评分规则决定「什么叫值得回」，改错了她会变得很奇怪；绝大多数人不需要动它。
+PANEL_HIDDEN_KEYS = frozenset({"hf_judge_rules"})
 DEFAULT_ADMIN = ""
 LEGACY_DEFAULT_ADMIN = "3261748099"
 LEGACY_MEMORY_PLUGIN = "astrbot_plugin_private_companion"
@@ -13281,6 +13285,9 @@ class HumanCorePlugin(Star):
                 continue
             if key in FORCED_ON_CONFIG_KEYS:
                 # 默认常开、关了会整块失效的开关：不在面板显示，值固定为开。
+                continue
+            if key in PANEL_HIDDEN_KEYS:
+                # 面板不展示（配置文件仍可改）：评分规则、判定提示词这类「改错了很难查」的项
                 continue
             if key.startswith("hf_"):
                 group = "心流"
