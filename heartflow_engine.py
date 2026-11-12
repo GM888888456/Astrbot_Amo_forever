@@ -505,6 +505,11 @@ class HeartflowEngine:
         self.judge_context_count: int = self.config.get("judge_context_count", self.context_messages_count)
         self.judge_include_reasoning: bool = self.config.get("judge_include_reasoning", True)
         self.judge_max_retries: int = self.config.get("judge_max_retries", 3)
+        # 判定服务（上游模型）故障时的降级状态：连败熔断 + 日志限频
+        self._judge_fail_streak = 0
+        self._judge_breaker_until = 0.0
+        self._judge_last_warn = 0.0
+        self._judge_last_error = ""
         self.immersive_mode_duration: int = self.config.get("immersive_mode_duration", 30)
         self.judgment_paused_timeout: int = self.config.get("judgment_paused_timeout", 60)
 
@@ -1193,6 +1198,65 @@ class HeartflowEngine:
     # ============================================================
     # 核心判断逻辑 (小模型)
     # ============================================================
+    # ---------- 判定服务故障时的降级 ----------
+
+    def _judge_is_transient(self, exc) -> bool:
+        """上游 503 / 429 / 超时值得再试一次；解析错、参数错不值得。"""
+        text = str(exc).lower()
+        for word in ("503", "502", "504", "429", "timeout", "timed out",
+                     "temporarily unavailable", "service_unavailable",
+                     "connection reset", "connection error"):
+            if word in text:
+                return True
+        return False
+
+    def _judge_ok(self) -> None:
+        self._judge_fail_streak = 0
+        self._judge_breaker_until = 0.0
+
+    def _judge_breaker_open(self) -> bool:
+        return float(getattr(self, "_judge_breaker_until", 0) or 0) > time.time()
+
+    def _judge_note_failure(self, exc) -> None:
+        """记一次失败：日志最多 60 秒一条，连败 3 次熔断 60 秒。
+
+        上游一挂，每条消息都 ERROR 一遍，日志全是噪音，还拖慢回复。
+        """
+        now = time.time()
+        self._judge_fail_streak = int(getattr(self, "_judge_fail_streak", 0)) + 1
+        self._judge_last_error = str(exc)[:160]
+        last = float(getattr(self, "_judge_last_warn", 0) or 0)
+        if now - last >= 60:
+            self._judge_last_warn = now
+            logger.warning("[心流] 判定服务调用失败（连续 %d 次）：%s"
+                           % (self._judge_fail_streak, self._judge_last_error))
+        if self._judge_fail_streak >= 3:
+            if not self._judge_breaker_open():
+                logger.warning("[心流] 判定服务连续失败，熔断 60 秒：期间只在被叫到时回复")
+            self._judge_breaker_until = now + 60
+            self._judge_fail_streak = 0
+
+    def _judge_fallback(self, event, reason: str = "") -> JudgeResult:
+        """判定服务不可用时的兜底：只在「明确在叫她」时才回。
+
+        不判定不等于一律沉默——名字/别名被叫到、被连续打扰，还是要应一声。
+        """
+        addressed = ""
+        try:
+            addressed = self._addresses_bot(str(getattr(event, "message_str", "") or "")) or ""
+        except Exception:
+            addressed = ""
+        force = bool(getattr(event, "amo_force_reply", False))
+        if addressed or force:
+            return JudgeResult(
+                relevance=float(self.score_max), willingness=float(self.score_max),
+                social=float(self.score_max), timing=float(self.score_max),
+                continuity=float(self.score_max),
+                should_reply=True, confidence=0.5, overall_score=0.5, target="bot",
+                reasoning="判定服务不可用，但她在叫我（%s）" % (addressed or "连续打扰"),
+            )
+        return JudgeResult(should_reply=False, reasoning="判定服务不可用：%s" % reason)
+
     async def judge_with_tiny_model(self, event: AstrMessageEvent) -> JudgeResult:
         """使用小模型进行多维度评分判断"""
         if getattr(event, "amo_force_reply", False):
@@ -1212,6 +1276,8 @@ class HeartflowEngine:
                 continuity=float(self.score_max), reasoning="消息直接呼叫机器人名字/别名",
                 should_reply=True, confidence=1.0, overall_score=1.0, target="bot",
             )
+        if self._judge_breaker_open():
+            return self._judge_fallback(event, "熔断中")
         provider = None
         if self.judge_provider_name:
             provider = self.context.get_provider_by_id(self.judge_provider_name)
@@ -1309,6 +1375,7 @@ class HeartflowEngine:
                     logger.debug(f"[心流] 📊 评分模式: {overall:.3f}/{dynamic_threshold:.2f} (均分:{avg_absolute_score:.1f}分) | ✅触发 | {who}{extra} | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')} | 各维度: {dim_scores}")
                 else:
                     logger.debug(f"[心流] 📊 评分模式: {overall:.3f}/{dynamic_threshold:.2f} (均分:{avg_absolute_score:.1f}分) | ❌跳过 | {who}{extra} | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')} | 各维度: {dim_scores}")
+                self._judge_ok()
                 return JudgeResult(
                     **scores, reasoning=data.get("reasoning", "") or thought,
                     should_reply=should_reply, confidence=overall, overall_score=overall,
@@ -1319,8 +1386,11 @@ class HeartflowEngine:
                 if attempt == self.judge_max_retries:
                     return JudgeResult(should_reply=False, reasoning="JSON解析失败")
             except Exception as e:
-                logger.error(f"[心流] 评分模式判断异常: {e}")
-                return JudgeResult(should_reply=False, reasoning=f"异常: {str(e)}")
+                self._judge_note_failure(e)
+                if self._judge_is_transient(e) and attempt < self.judge_max_retries:
+                    await asyncio.sleep(0.4)
+                    continue
+                return self._judge_fallback(event, "异常: %s" % e)
         return JudgeResult(should_reply=False, reasoning="未知错误")
 
     async def judge_immersive_mode(self, event: AstrMessageEvent) -> JudgeResult:
@@ -1395,6 +1465,8 @@ class HeartflowEngine:
 严格返回 JSON：
 {{"should_reply": true或false, "target": "bot|other|all|unknown", "voice": 0-10的整数, "share_photo": 0-10的整数, "thought": "一句话说明在对谁说"{immersive_reasoning_part}}}
 """
+        if self._judge_breaker_open():
+            return self._judge_fallback(event, "熔断中")
         for attempt in range(self.judge_max_retries + 1):
             try:
                 resp = await provider.text_chat(
@@ -1419,13 +1491,17 @@ class HeartflowEngine:
                     logger.info(f"[心流] 🌊 沉浸模式: ✅触发 | 对象:{target} | 剩余{remaining}秒 | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')}")
                 else:
                     logger.info(f"[心流] 🌊 沉浸模式: ❌跳过 | 对象:{target} | 剩余{remaining}秒 | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')}")
+                self._judge_ok()
                 return JudgeResult(should_reply=should_reply, reasoning=data.get("reasoning", "") or thought, confidence=1.0 if should_reply else 0.0, overall_score=1.0 if should_reply else 0.0, target=target)
             except (json.JSONDecodeError, ValueError):
                 if attempt == self.judge_max_retries:
                     return JudgeResult(should_reply=False, reasoning="JSON解析失败")
             except Exception as e:
-                logger.error(f"[心流] 沉浸模式判断异常: {e}")
-                return JudgeResult(should_reply=False, reasoning=f"异常: {str(e)}")
+                self._judge_note_failure(e)
+                if self._judge_is_transient(e) and attempt < self.judge_max_retries:
+                    await asyncio.sleep(0.4)
+                    continue
+                return self._judge_fallback(event, "异常: %s" % e)
         return JudgeResult(should_reply=False, reasoning="未知错误")
 
     # ============================================================
