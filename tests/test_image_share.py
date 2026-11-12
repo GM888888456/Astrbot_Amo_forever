@@ -48,10 +48,19 @@ class FakeEvent:
 
 
 class FakeImage:
-    def __init__(self, data=b"IMG", delay=0):
+    def __init__(self, data=b"IMG", delay=0, allowed=True, used=0):
         self.data = data
         self.delay = delay
+        self.allowed = allowed
+        self.used = used
         self.calls = []
+        self.quota_calls = []
+
+    def quota(self, uid="", umo="", group=False):
+        """每日张数只认生图插件：主插件问它要，不自己记。"""
+        self.quota_calls.append((uid, umo, group))
+        return {"allowed": self.allowed, "used": self.used,
+                "limit": 0, "remaining": -1}
 
     async def draw_for(self, umo, uid="", prompt=""):
         self.calls.append(prompt)
@@ -112,9 +121,13 @@ class ShareDecisionTests(unittest.TestCase):
         self.assertIsNotNone(run(p._share_decision(FakeEvent())))
 
     def test_group_daily_limit_blocks(self):
-        p = make(image_share_group_daily_limit=1)
-        p.db.kv["image_share_group_day"] = {"date": amo_main.today_str(), "count": 1}
+        """额度只认生图插件：它说今天满了，主插件就不发。"""
+        p = make()
+        p.image.allowed = False
+        p.image.used = 2
         self.assertIsNone(run(p._share_decision(FakeEvent(private=False))))
+        self.assertEqual(p.image.quota_calls[-1][2], True, "问的是群额度")
+        self.assertNotIn("image_share_group_day", p.db.kv, "主插件不再自己记张数")
 
     def test_missing_plugin(self):
         p = make()
@@ -146,7 +159,9 @@ class ShareTaskTests(unittest.TestCase):
         run(p._share_image_task(decision))
         self.assertEqual(len(p.image.calls), 1)
         self.assertEqual(p.sent, [b"IMG"])
-        self.assertEqual(p.db.kv["image_share_private_day"]["count"], 1)
+        self.assertIn("image_share_last", p.db.kv, "冷却时间由主插件记")
+        self.assertNotIn("image_share_private_day", p.db.kv,
+                         "张数由生图插件记，主插件不重复计数")
 
     def test_task_timeout_does_not_send(self):
         p = make(image_share_timeout=1)

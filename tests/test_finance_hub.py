@@ -138,6 +138,70 @@ class HubTests(unittest.TestCase):
         result = run(obj.charge(10, "x"))
         self.assertFalse(result["ok"])
 
+    def test_charge_same_request_id_charges_once(self):
+        """同一个幂等号重试只扣一次（医疗重试/网络重发都走这里）。"""
+        obj, fake = build(balance=1000)
+        first = run(obj.charge(200, "看病", "医院", request_id="med-abc"))
+        second = run(obj.charge(200, "看病", "医院", request_id="med-abc"))
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertTrue(second.get("repeated"))
+        self.assertAlmostEqual(fake.balance_value, 800.0)
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_different_request_id_charges_twice(self):
+        obj, fake = build(balance=1000)
+        run(obj.charge(200, "看病", "医院", request_id="med-1"))
+        run(obj.charge(200, "买药", "药房", request_id="med-2"))
+        self.assertAlmostEqual(fake.balance_value, 600.0)
+
+    def test_charge_rejects_bad_amount(self):
+        obj, fake = build(balance=1000)
+        self.assertEqual(run(obj.charge(0, "x"))["code"], "bad_amount")
+        self.assertEqual(run(obj.charge(-5, "x"))["code"], "bad_amount")
+
+    def test_charge_rejects_over_limit(self):
+        obj, fake = build(balance=10 ** 9)
+        result = run(obj.charge(obj.CHARGE_MAX + 1, "天价"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "over_limit")
+        self.assertEqual(fake.calls, [])
+
+    def test_charge_writes_expense_to_memory(self):
+        """扣完要把「花了多少、扣没扣成」交给记忆，聊天时她才知道。"""
+        obj, fake = build(balance=1000)
+        obj.db = type("DB", (), {
+            "list_profiles": lambda self, limit=1: [{"uid": "u1"}],
+        })()
+        seen = []
+
+        async def fake_write(uid, content, kind="fact", tier=1, scope="private", group_id=""):
+            seen.append((uid, content, kind, tier))
+            return True
+
+        obj._write_memory_checked = fake_write
+        run(obj.charge(240, "看病", "医院", request_id="med-9", detail="挂号+药费"))
+        self.assertEqual(seen[0][0], "u1")
+        self.assertEqual(seen[0][2], "expense")
+        self.assertEqual(seen[0][3], 0, "流水按事件层记，不进核心记忆")
+        self.assertIn("看病（挂号+药费）", seen[0][1])
+        self.assertIn("已扣款", seen[0][1])
+
+    def test_charge_failure_also_recorded(self):
+        obj, fake = build(balance=100)
+        obj.db = type("DB", (), {
+            "list_profiles": lambda self, limit=1: [{"uid": "u1"}],
+        })()
+        seen = []
+
+        async def fake_write(uid, content, kind="fact", tier=1, scope="private", group_id=""):
+            seen.append(content)
+            return True
+
+        obj._write_memory_checked = fake_write
+        run(obj.charge(2400, "阑尾炎手术", "医院"))
+        self.assertIn("没扣成", seen[0])
+
     def test_recent_money(self):
         obj, _ = build()
         items = obj.recent_money(3)

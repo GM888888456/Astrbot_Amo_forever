@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.5.9"
+PLUGIN_VERSION = "7.6.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -7053,38 +7053,29 @@ class HumanCorePlugin(Star):
     def _image_share_quota(self, now, private=True):
         """返回 (能不能发, 今天已发张数)。
 
-        私聊：用户自己承担额度 → 不冷却、不限量。
-        群聊：冷却（默认 180 分钟）+ 每天上限（默认 10 张），**所有群共用一份额度**。
+        张数**只认生图插件**（Astrbot_Amo_Image）：主插件不再自己记一份，
+        否则同一张图会被数两遍，两边迟早对不上。冷却和概率仍在这里。
         """
-        if private:
-            # 私聊默认不限量；只有显式配了 image_share_private_daily_limit 才计数
-            limit = max(0, self.cfg_int("image_share_private_daily_limit", 0))
-            if not limit:
-                return True, 0
-            day = today_str()
+        if not private:
+            cooldown = max(0, self.cfg_int("image_share_cooldown_minutes", 180)) * 60
             try:
-                record = self.db.kv_get("image_share_private_day", {}) or {}
+                last = to_float(self.db.kv_get("image_share_last", 0), 0)
             except Exception:
-                record = {}
-            used = int(record.get("count", 0)) if record.get("date") == day else 0
-            return used < limit, used
-        cooldown = max(0, self.cfg_int("image_share_cooldown_minutes", 180)) * 60
+                last = 0
+            if cooldown and last and now - last < cooldown:
+                return False, 0
+        plugin = self._image_plugin()
+        reader = getattr(plugin, "quota", None) if plugin is not None else None
+        if not callable(reader):
+            return True, 0
         try:
-            last = to_float(self.db.kv_get("image_share_last", 0), 0)
+            info = reader("", "", not private) or {}
         except Exception:
-            last = 0
-        if cooldown and last and now - last < cooldown:
-            return False, 0
-        day = today_str()
-        try:
-            record = self.db.kv_get("image_share_group_day", {}) or {}
-        except Exception:
-            record = {}
-        used = int(record.get("count", 0)) if record.get("date") == day else 0
-        limit = max(0, self.cfg_int("image_share_group_daily_limit", 10))
-        if limit and used >= limit:
-            return False, used
-        return True, used
+            info = {}
+        if not isinstance(info, dict):
+            return True, 0
+        used = to_int(info.get("used"), 0)
+        return (info.get("allowed", True) is not False), used
 
     async def _send_image_to_umo(self, umo, data, text="", quote_id=""):
         """在后台把图发到会话；用 context.send_message，不依赖已经结束的事件。
@@ -7170,7 +7161,6 @@ class HumanCorePlugin(Star):
         plugin = decision.get("plugin")
         umo = decision.get("umo") or ""
         prompt = decision.get("prompt") or ""
-        used = int(decision.get("used") or 0)
         timeout = max(1, self.cfg_int("image_share_timeout", 90))
         self._share_inflight = True
         try:
@@ -7183,16 +7173,10 @@ class HumanCorePlugin(Star):
             quote = str(decision.get("quote") or "")
             if not await self._send_image_to_umo(umo, data, prefix, quote):
                 return
+            # 张数由生图插件自己记（draw_for 里 _mark_call），这里只记冷却时间，
+            # 不重复计数——「今天发了几张」只有一个地方说了算。
             self.db.kv_set("image_share_last", now_ts())
-            if "GroupMessage" in umo:
-                # 所有群共用一份额度
-                self.db.kv_set("image_share_group_day", {"date": today_str(), "count": used + 1})
-                logger.info("[amo] 主动在群里分享了一张图（群聊今日第 %d 张）" % (used + 1))
-            else:
-                day_record = self.db.kv_get("image_share_private_day", {}) or {}
-                private_used = int(day_record.get("count", 0)) if day_record.get("date") == today_str() else 0
-                self.db.kv_set("image_share_private_day", {"date": today_str(), "count": private_used + 1})
-                logger.info("[amo] 私聊主动分享了一张图（今日第 %d 张）" % (private_used + 1))
+            logger.info("[amo] 主动分享了一张图（%s）" % ("群聊" if "GroupMessage" in umo else "私聊"))
             # 让她下一轮知道自己刚发过图，别一问三不知
             self.db.kv_set("image_share_note", {"ts": now_ts(), "text": prefix or ""})
         except asyncio.TimeoutError:
@@ -15222,23 +15206,105 @@ class HumanCorePlugin(Star):
         except Exception as exc:
             logger.debug("[amo] 财务快照同步失败: %s" % exc)
 
-    async def charge(self, amount, reason: str = "", payee: str = "") -> dict:
-        """花钱的唯一入口。返回 {ok, balance} 或 {ok:False, short}。
+    #: 单笔扣款上限：模型或挂载插件算错时，宁可拒绝，也不能把余额一次清空。
+    CHARGE_MAX = 100000.0
 
-        没有金融插件时返回 ok=False——**绝不记账，也不假装成功**。
+    def _primary_uid(self) -> str:
+        try:
+            rows = self.db.list_profiles(limit=1)
+        except Exception:
+            rows = []
+        return str(rows[0].get("uid") or "") if rows else ""
+
+    def _charge_cache_get(self, request_id):
+        cache = getattr(self, "_charge_cache", None) or {}
+        hit = cache.get(request_id) if request_id else None
+        return dict(hit) if isinstance(hit, dict) else None
+
+    def _charge_cache_put(self, request_id, result):
+        if not request_id:
+            return
+        cache = getattr(self, "_charge_cache", None)
+        if cache is None:
+            cache = {}
+            self._charge_cache = cache
+        cache[request_id] = dict(result)
+        if len(cache) > 200:
+            for key in list(cache)[:50]:
+                cache.pop(key, None)
+
+    async def charge(self, amount, reason: str = "", payee: str = "",
+                     request_id: str = "", source: str = "", detail: str = "",
+                     uid: str = "") -> dict:
+        """花钱的唯一入口：**审批 → 交给金融 → 把结果告诉记忆**。
+
+        她不自己算账：余额只认金融返回的数字，这里不写余额、不算流水。
+        ``request_id`` 是幂等号——同一个号重试只扣一次（医疗重试、网络重发都走这里）。
         """
+        try:
+            value = round(float(amount or 0), 2)
+        except Exception:
+            value = 0.0
+        rid = str(request_id or "").strip()
+        if value <= 0:
+            return {"ok": False, "code": "bad_amount", "reason": "金额不对",
+                    "balance": self.balance()}
+        if value > self.CHARGE_MAX:
+            return {"ok": False, "code": "over_limit", "reason": "超过单笔上限",
+                    "balance": self.balance()}
+        cached = self._charge_cache_get(rid)
+        if cached is not None:
+            cached["repeated"] = True
+            return cached
+
         plugin = self._finance()
         if plugin is None:
-            return {"ok": False, "reason": "没有金融插件", "balance": 0}
-        try:
-            result = await asyncio.to_thread(plugin.charge, amount, reason, payee)
-        except Exception as exc:
-            logger.warning("[amo] 扣款调用失败: %s" % exc)
-            return {"ok": False, "reason": "扣款出错"}
-        if not isinstance(result, dict):
-            result = {"ok": False, "reason": "返回值异常"}
+            result = {"ok": False, "code": "no_finance", "reason": "没有金融插件", "balance": 0}
+        else:
+            try:
+                result = await asyncio.to_thread(plugin.charge, value, reason, payee)
+            except Exception as exc:
+                logger.warning("[amo] 扣款调用失败: %s" % exc)
+                result = {"ok": False, "code": "call_failed", "reason": "扣款出错"}
+            if not isinstance(result, dict):
+                result = {"ok": False, "code": "bad_result", "reason": "返回值异常"}
+        result.setdefault("code", "ok" if result.get("ok") else "failed")
+        result.setdefault("transaction_id", rid or ("amo" + uuid.uuid4().hex[:10]))
         self._sync_finance()
+        self._charge_cache_put(rid, result)
+        await self._record_expense(value, reason, detail, source, result, uid)
         return result
+
+    async def _record_expense(self, amount, reason, detail, source, result, uid=""):
+        """把这一笔告诉记忆——**成功失败都记**。
+
+        只记成功的话，聊天里她会以为钱没花，或者不知道自己为什么没钱。
+        """
+        try:
+            target = str(uid or "").strip() or self._primary_uid()
+        except Exception:
+            target = ""
+        if not target:
+            return
+        rate = ("%s（%s）" % (reason or "一笔支出", detail)) if detail else (reason or "一笔支出")
+        if result.get("ok"):
+            text = "%s：支出 ¥%.2f，金融已扣款" % (rate, float(amount))
+        else:
+            text = "%s：¥%.2f 没扣成（%s）" % (
+                rate, float(amount), result.get("reason") or "余额不足")
+        try:
+            balance = result.get("balance")
+            if balance is not None:
+                text += "，余额 ¥%.2f" % float(balance)
+        except Exception:
+            pass
+        if source:
+            text = "[" + str(source) + "] " + text
+        try:
+            await self._write_memory_checked(target, text, kind="expense", tier=0,
+                                             scope="private", group_id="")
+        except Exception as exc:
+            logger.debug("[amo] 支出事件没写进记忆: %s" % exc)
 
     async def income(self, amount, reason: str = "") -> dict:
         plugin = self._finance()
