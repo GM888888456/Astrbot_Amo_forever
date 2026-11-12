@@ -3024,11 +3024,16 @@
       return providersCache;
     }
 
+    // 面板里不展示的配置项：评分规则是给「真要改判定标准」的人用的，
+    // 放在面板上只会让人误以为必须调。想改还是能改配置文件。
+    const HIDDEN_CONFIG_KEYS = new Set(["hf_judge_rules"]);
+
     async function loadSettings() {
       try {
         const result = await call("config");
         const data = objectFrom(result);
-        configItems = Array.isArray(data.items) ? data.items : [];
+        configItems = (Array.isArray(data.items) ? data.items : [])
+          .filter((item) => !HIDDEN_CONFIG_KEYS.has(String(item && item.key || "")));
         configGroupNotes = (data.groupNotes && typeof data.groupNotes === "object") ? data.groupNotes : {};
         if (configItems.some((item) => item.special === "select_provider")) await ensureProviders();
         if (configItems.some((item) => item.special === "select_memory_plugin")) await ensureMemoryPlugins();
