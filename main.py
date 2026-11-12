@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.1.1"
+PLUGIN_VERSION = "8.2.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -12957,16 +12957,14 @@ class HumanCorePlugin(Star):
         uid = self._canonical_uid(event)
 
         if sub in ("help", "帮助", ""):
+            # 指令合并成三行：能一眼扫完，不用往回翻
             return (
-                "🌙 陪伴 指令\n"
-                "/amo status 状态｜/amo mood 九维心情\n"
-                "/amo profile [@人] 档案｜/amo memories [@人] 记忆\n"
-                "/amo period 生理期｜/amo health 健康｜/amo schedule 日程\n"
-                "/amo weather 天气｜/amo worldview 世界观｜/amo threshold 阈值\n"
-                "管理员：/amo rel @人 关系｜/amo set @人 字段 值｜/amo memo @人 内容 [0/1/2]（写入记忆插件）\n"
-                "/amo period set YYYY-MM-DD｜/amo health set 状态\n"
-                "/amo draw 描述（测试画图）｜/amo photo（照片概率/状态）\n"
-                "/amo schedule regen｜/amo worldview regen｜/amo say 内容｜/amo clean"
+                "🌙 陪伴 · /amo 后面接这些\n"
+                "查看：status 状态｜mood 心情｜period 生理期｜health 身体｜schedule 日程｜"
+                "weather 天气｜worldview 世界观｜threshold 阈值\n"
+                "看人：profile [@人]｜memories [@人]｜photo 照片\n"
+                "管理：rel @人 关系｜set @人 字段 值｜memo @人 内容 [0/1/2]｜period set 日期｜"
+                "health set 状态｜regen 日程/世界观｜say 内容｜clean"
             )
 
         if sub in ("segment", "分段"):
@@ -16203,6 +16201,40 @@ class HumanCorePlugin(Star):
         logger.info("[amo] 面板照片已清除: %s" % ("是" if removed else "本来就没有"))
         return {"code": 0, "data": {"removed": removed}}
 
+    async def _remember_panel_photo(self, kind: str, clothes: str = "", size: int = 0) -> None:
+        """把「今天拍了张照片」写进记忆（照片本身不进模型，只记一条事实）。"""
+        mem = self._data_mem()
+        remember = getattr(mem, "remember", None) if mem is not None else None
+        if not callable(remember):
+            return
+        try:
+            umo = str(self._last_umo or self._first_private_umo() or "")
+        except Exception:
+            umo = ""
+        uid = umo.rsplit(":", 1)[-1] if umo else ""
+        if not uid:
+            return
+        label = "证件照" if str(kind) == "id" else "自拍"
+        outfit = ("，穿的" + clothes) if clothes else ""
+        now_text = ""
+        try:
+            snap = self.state.snapshot() if self.state is not None else {}
+            now_text = str(snap.get("datetime_text") or "")[:16]
+        except Exception:
+            now_text = ""
+        content = "【照片】%s我%s拍了一张%s%s。" % (
+            (now_text + " ") if now_text else "", "", label, outfit)
+        try:
+            await remember(self._data_bot_id(), str(uid), content,
+                           kind="photo_record", importance=0.35,
+                           scope="private", group_id="")
+            logger.info("[amo] 面板照片已记进记忆：%s（%d 字节）" % (label, size))
+        except TypeError:
+            try:
+                await remember(self._data_bot_id(), str(uid), content)
+            except Exception:
+                pass
+
     async def api_photo_self(self):
         """世界页那张照片：kind=self 自拍，kind=id 一寸证件照。"""
         await self._ensure_ready()
@@ -16218,10 +16250,16 @@ class HumanCorePlugin(Star):
 
         async def build():
             image = await self._draw_for_panel(prompt)
+            size = 0
             try:
-                self._save_panel_photo(image)
+                size = self._save_panel_photo(image)
             except Exception as exc:
                 logger.debug("[amo] 面板照片落盘失败: %s" % exc)
+            # 拍完要记住：不然她下次完全不记得这张照片
+            try:
+                await self._remember_panel_photo(kind, clothes, size)
+            except Exception as exc:
+                logger.debug("[amo] 记录面板照片失败: %s" % exc)
             return {"kind": kind, "prompt": prompt, "image": image}
 
         return {"code": 0, "data": {"job": self._photo_job_start("self_" + kind, build())}}

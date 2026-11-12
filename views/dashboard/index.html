@@ -394,8 +394,8 @@
     </header>
 
     <nav class="tabs">
-      <button class="tab" data-tab="status">状态</button>
-      <button class="tab active" data-tab="world">世界</button>
+      <button class="tab active" data-tab="status">状态</button>
+      <button class="tab" data-tab="world">世界</button>
       <button class="tab" data-tab="schedule">日程</button>
       <button class="tab" data-tab="actions">操作</button>
       <button class="tab" data-tab="profiles">用户</button>
@@ -2971,8 +2971,8 @@
     async function boot(attempt) {
       try {
         await load();
-        // 默认落在「世界」，想看状态点时钟左边的脉搏图标
-        showTab("world");
+        // 默认落在「状态」：打开就看到她现在怎么样
+        showTab("status");
       } catch (error) {
         if (attempt < 2) {
           setTimeout(() => boot(attempt + 1), 1500);
