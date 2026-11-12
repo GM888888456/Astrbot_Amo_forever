@@ -255,7 +255,7 @@ class MemoryProvider:
 
 
 class AmoDataProvider(MemoryProvider):
-    """「我想永远记住你」：默认终端，能力最全。"""
+    """「我想永远陪着你-记忆」：默认终端，能力最全。"""
 
     name = "amo_data"
     priority = 10

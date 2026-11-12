@@ -229,7 +229,7 @@
   "memory_provider": {
     "type": "string",
     "description": "记忆能力来源",
-    "hint": "auto：自动选可用的（现在就是「我想永远记住你」）；也可以填 amo_data 强制指定。",
+    "hint": "auto：自动选可用的（现在就是「我想永远陪着你-记忆」）；也可以填 amo_data 强制指定。",
     "default": "auto"
   },
   "ctx_window": {
@@ -1311,7 +1311,7 @@
   "time_recall_enabled": {
     "type": "bool",
     "description": "【时间回看】按时间问就回看当时的聊天",
-    "hint": "他问「昨天下午/前天/上周三」时，去记忆终端（我想永远记住你）取那段时间的聊天再回答；只带内容，不给每条消息打时间戳。",
+    "hint": "他问「昨天下午/前天/上周三」时，去记忆终端（我想永远陪着你-记忆）取那段时间的聊天再回答；只带内容，不给每条消息打时间戳。",
     "default": true
   },
   "time_recall_limit": {

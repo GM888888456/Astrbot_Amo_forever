@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-我想永远陪着你 / 我想永远陪伴你 5.4.2
+我想永远陪着你 / 我想永远陪着你-终端 5.4.2
 一个尽量“像人”的 AstrBot 智械人类核心：
 生理期 / 九维心情 / 世界观与日程 / 天气 / 健康 / 群聊插话阈值 /
 私聊判定 / 主动私聊 / 长期记忆与遗忘 / 防抖 / 分段与打字延迟 / 引用回复 / AI 润色
@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.5.8"
+PLUGIN_VERSION = "7.5.9"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -2675,6 +2675,10 @@ class HumanState:
             "status": "健康", "since": now_ts(), "until": 0, "note": ""
         }
         self.weather = self.db.kv_get("weather", {}) or {}
+        # 财务快照：由金融插件推送过来。她说话时心里有数，但它不是账本本体。
+        self.finance = self.db.kv_get("finance", {}) or {}
+        if not isinstance(self.finance, dict):
+            self.finance = {}
         self.worldview = self.db.kv_get("worldview", {}) or {}
         self.schedule = self.db.kv_get("schedule", {}) or {}
         self.schedule_ctx = self.db.kv_get("schedule_ctx", {}) or {}
@@ -2701,6 +2705,7 @@ class HumanState:
         self.save_mood()
         self.db.kv_set("period_start", self.period_start)
         self.db.kv_set("health", self.health)
+        self.db.kv_set("finance", self.finance)
         self.db.kv_set("last_daily", self.last_daily)
         self.db.kv_set("last_health_roll", self.last_health_roll)
 
@@ -5152,7 +5157,7 @@ class HumanCorePlugin(Star):
         self._loop_task = None
         self._config_mtime = 0.0
         self._register_web_apis()
-        logger.info("[amo] 我想永远陪伴你 %s loaded; stale web routes purged" % PLUGIN_VERSION)
+        logger.info("[amo] 我想永远陪着你-终端 %s loaded; stale web routes purged" % PLUGIN_VERSION)
         self._boot_task = self._spawn(self._ensure_ready())
 
     # ---------- 配置 ----------
@@ -6936,7 +6941,7 @@ class HumanCorePlugin(Star):
         "query_memory", "retrieve_memory", "retrieve",
     )
 
-    # ---------- 配套数据插件（Astr_Amo_data / 我想永远记住你） ----------
+    # ---------- 配套数据插件（Astr_Amo_data / 我想永远陪着你-记忆） ----------
     DATA_PLUGIN_NAMES = ("Astr_Amo_data", "astrbot_plugin_amo_data", "AstrAmoData")
 
     @staticmethod
@@ -7396,7 +7401,7 @@ class HumanCorePlugin(Star):
             logger.debug("[amo] 主动分享入口异常: %s" % exc)
 
     def _data_plugin(self):
-        """找「我想永远记住你」插件实例；没装就返回 None。"""
+        """找「我想永远陪着你-记忆」插件实例；没装就返回 None。"""
         try:
             for name in self.DATA_PLUGIN_NAMES:
                 star = self._star_instance(self.context.get_registered_star(name))
@@ -8175,7 +8180,7 @@ class HumanCorePlugin(Star):
                 except Exception:
                     pass
             self.db.kv_set(marker, True)
-            logger.info("[amo] 已把关系网/日程缓存迁移到「我想永远记住你」：%s" % pushed)
+            logger.info("[amo] 已把关系网/日程缓存迁移到「我想永远陪着你-记忆」：%s" % pushed)
         # 画像每次都对齐（不看一次性标记）：缺的补、改过的重推
         try:
             await self._sync_profiles_to_data()
@@ -11092,6 +11097,14 @@ class HumanCorePlugin(Star):
         if self.state.last_daily != today_str():
             self.state.daily_tick()
         self.state.roll_health()
+        try:
+            self._sync_finance()
+        except Exception as exc:
+            logger.debug("[amo] 财务同步失败: %s" % exc)
+        try:
+            await self._maybe_treat()
+        except Exception as exc:
+            logger.debug("[amo] 就医判断失败: %s" % exc)
         await self.state.refresh_weather()
         try:
             await self._maybe_weather_alert()
@@ -13990,7 +14003,7 @@ class HumanCorePlugin(Star):
             voice_items = self._voice_panel_items()
             items.extend(voice_items)
             if not voice_items:
-                notes["语音"] = ("没找到「我想和你说说话」（未安装或未启用）。"
+                notes["语音"] = ("没找到「我想永远陪着你-语音」（未安装或未启用）。"
                                   "装好并启用它，语音设置才会出现在这里；key、后端、音色仍在它自己的配置页填。")
         except Exception as exc:
             logger.warning("[amo] 读取语音设置失败: %s" % exc)
@@ -14228,7 +14241,7 @@ class HumanCorePlugin(Star):
         return {"code": 0, "data": data}
 
     VOICE_PLUGIN_NAMES = ("Astrbot_Amo_Speechsound", "astrbot_plugin_speechsound", "amo_speechsound")
-    # 语音插件（我想和你说说话）的设置：key, 类型, 标题, 说明, 默认值
+    # 语音插件（我想永远陪着你-语音）的设置：key, 类型, 标题, 说明, 默认值
     # 只放行为类开关；后端 / key / 音色仍然在语音插件自己的配置页填。
     VOICE_SETTING_KEYS = (
         ("enable", "bool", "启用语音", "总开关：关掉后她发不了语音，也不会有兜底转语音。", True),
@@ -14248,7 +14261,7 @@ class HumanCorePlugin(Star):
     )
 
     def _voice_plugin(self):
-        """找「我想和你说说话」插件实例；没装或没启用返回 None。"""
+        """找「我想永远陪着你-语音」插件实例；没装或没启用返回 None。"""
         for name in self.VOICE_PLUGIN_NAMES:
             try:
                 meta = self.context.get_registered_star(name)
@@ -14335,7 +14348,7 @@ class HumanCorePlugin(Star):
         changes = data.get("changes") if isinstance(data.get("changes"), dict) else data
         plugin = self._voice_plugin()
         if plugin is None:
-            return {"code": 1, "msg": "没找到「我想和你说说话」（未安装或未启用）"}
+            return {"code": 1, "msg": "没找到「我想永远陪着你-语音」（未安装或未启用）"}
         config = getattr(plugin, "config", None)
         if config is None or not hasattr(config, "update"):
             return {"code": 1, "msg": "语音插件的配置对象不可写"}
@@ -14907,7 +14920,7 @@ class HumanCorePlugin(Star):
             return {"code": 0, "msg": "已写入记忆终端"}
         if self._external_memory_write(uid, content, kind, tier, scope, group_id):
             return {"code": 0, "msg": "已写入记忆终端"}
-        return {"code": 1, "msg": "没有可写入的记忆终端，请先安装并启用「我想永远记住你」"}
+        return {"code": 1, "msg": "没有可写入的记忆终端，请先安装并启用「我想永远陪着你-记忆」"}
 
     async def api_memory_delete(self):
         """有记忆终端就删终端里的那条；没有就还按老规矩让对方插件自己管。"""
@@ -14920,7 +14933,7 @@ class HumanCorePlugin(Star):
                 return {"code": 0, "msg": "已删除"}
         return {
             "code": 1,
-            "msg": "记忆由记忆终端保存，请到「我想永远记住你」面板里删除",
+            "msg": "记忆由记忆终端保存，请到「我想永远陪着你-记忆」面板里删除",
         }
 
     async def api_mood_update(self):
@@ -15146,6 +15159,177 @@ class HumanCorePlugin(Star):
                 pass
             jobs[job_id].update(status="error", msg="事件循环不可用")
         return job_id
+
+    # ---------- 财务中枢：所有钱只能走这里 ----------
+    #
+    # 设计要点：
+    #   * 医疗、房租、购物都不许自己改账，一律调 charge()/income()；
+    #   * 成功不写日志（正常交易不该刷屏），失败由金融插件打 warning；
+    #   * 每笔都会同步到 self.state.finance，她下次开口时心里有数。
+
+    FINANCE_PLUGIN_NAMES = (
+        "Astrbot_Amo_Finance", "astrbot_plugin_amo_finance", "amo_finance",
+    )
+
+    def _finance(self):
+        """找「我想永远陪着你-金融」实例；没装返回 None。"""
+        for name in self.FINANCE_PLUGIN_NAMES:
+            try:
+                meta = self.context.get_registered_star(name)
+            except Exception:
+                meta = None
+            star = self._finance_instance(meta)
+            if star is not None:
+                return star
+        try:
+            for meta in self.context.get_all_stars():
+                marker = ((getattr(meta, "name", "") or "") + " "
+                          + (getattr(meta, "module_path", "") or "")).lower()
+                if "amo_finance" not in marker:
+                    continue
+                star = self._finance_instance(meta)
+                if star is not None:
+                    return star
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _finance_instance(meta):
+        if meta is None:
+            return None
+        for attr in ("star_cls", "instance", "star", "plugin"):
+            value = getattr(meta, attr, None)
+            if value is not None:
+                return value
+        return None
+
+    def _sync_finance(self) -> None:
+        """把金融插件的最新快照拉进状态。不写日志，失败也不影响主链路。"""
+        plugin = self._finance()
+        if plugin is None:
+            return
+        try:
+            snap = plugin.snapshot()
+            if isinstance(snap, dict):
+                self.state.finance = {
+                    "balance": snap.get("balance", 0),
+                    "fixed_total": snap.get("fixed_total", 0),
+                    "anxiety": snap.get("anxiety", 0),
+                    "owed": snap.get("owed_to_user", 0),
+                    "month_spent": snap.get("month_spent", 0),
+                }
+        except Exception as exc:
+            logger.debug("[amo] 财务快照同步失败: %s" % exc)
+
+    async def charge(self, amount, reason: str = "", payee: str = "") -> dict:
+        """花钱的唯一入口。返回 {ok, balance} 或 {ok:False, short}。
+
+        没有金融插件时返回 ok=False——**绝不记账，也不假装成功**。
+        """
+        plugin = self._finance()
+        if plugin is None:
+            return {"ok": False, "reason": "没有金融插件", "balance": 0}
+        try:
+            result = await asyncio.to_thread(plugin.charge, amount, reason, payee)
+        except Exception as exc:
+            logger.warning("[amo] 扣款调用失败: %s" % exc)
+            return {"ok": False, "reason": "扣款出错"}
+        if not isinstance(result, dict):
+            result = {"ok": False, "reason": "返回值异常"}
+        self._sync_finance()
+        return result
+
+    async def income(self, amount, reason: str = "") -> dict:
+        plugin = self._finance()
+        if plugin is None:
+            return {"ok": False, "reason": "没有金融插件"}
+        try:
+            result = await asyncio.to_thread(plugin.income, amount, reason, "")
+        except Exception as exc:
+            logger.warning("[amo] 入账调用失败: %s" % exc)
+            return {"ok": False, "reason": "入账出错"}
+        self._sync_finance()
+        return result if isinstance(result, dict) else {"ok": False}
+
+    def balance(self) -> float:
+        plugin = self._finance()
+        if plugin is None:
+            return 0.0
+        try:
+            return float(plugin.balance())
+        except Exception:
+            return 0.0
+
+    def recent_money(self, limit: int = 5) -> list:
+        plugin = self._finance()
+        if plugin is None:
+            return []
+        try:
+            return list(plugin.recent(limit))
+        except Exception:
+            return []
+
+    # ---------- 就医：生病了，去不去治 ----------
+
+    MEDICAL_PLUGIN_NAMES = (
+        "Astrbot_Amo_Medical", "astrbot_plugin_amo_medical", "amo_medical",
+    )
+
+    def _medical(self):
+        """找「我想永远陪着你-医疗」实例；没装返回 None。"""
+        for name in self.MEDICAL_PLUGIN_NAMES:
+            try:
+                meta = self.context.get_registered_star(name)
+            except Exception:
+                meta = None
+            star = self._finance_instance(meta)
+            if star is not None:
+                return star
+        try:
+            for meta in self.context.get_all_stars():
+                marker = ((getattr(meta, "name", "") or "") + " "
+                          + (getattr(meta, "module_path", "") or "")).lower()
+                if "amo_medical" not in marker:
+                    continue
+                star = self._finance_instance(meta)
+                if star is not None:
+                    return star
+        except Exception:
+            pass
+        return None
+
+    async def _maybe_treat(self) -> None:
+        """换成医疗插件管的病情后，由它决定治不治、钱够不够。
+
+        医疗插件会回调 self.charge()——**所以这里仍然是「她知情」的那条路**。
+        成功只写状态，不刷日志；失败由医疗插件记 warning。
+        """
+        medical = self._medical()
+        if medical is None:
+            return
+        try:
+            info = medical.status()
+        except Exception:
+            return
+        if not info.get("sick"):
+            return
+        # 同一个病一天只判断一次，避免后台循环反复去治
+        key = "%s|%s" % (today_str(), info.get("illness") or info.get("status"))
+        if getattr(self, "_treat_marked", None) == key:
+            return
+        self._treat_marked = key
+        try:
+            result = await medical.treat()
+        except Exception as exc:
+            logger.warning("[amo] 就医失败: %s" % exc)
+            return
+        if result.get("ok"):
+            logger.info("[amo] 去看了病：%s，自付 %.0f"
+                        % (result.get("name"), float(result.get("self_pay") or 0)))
+            self.state.set_health("健康", 0, "")
+        else:
+            self.state.nudge(焦虑=8, 郁闷=4)
 
     # ---------- 世界页照片：单击自拍、三击一寸证件照 ----------
 

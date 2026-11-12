@@ -1305,9 +1305,10 @@ class HeartflowEngine:
                 extra = " | 类型:%s | 话题:%s | 风格:%s" % (context_type or "?", topic or "?", style or "?")
 
                 if should_reply:
-                    logger.info(f"[心流] 📊 评分模式: {overall:.3f}/{dynamic_threshold:.2f} (均分:{avg_absolute_score:.1f}分) | ✅触发 | {who}{extra} | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')} | 各维度: {dim_scores}")
+                    # 静默：正常判定只进 debug，面板「记录」页才看得到
+                    logger.debug(f"[心流] 📊 评分模式: {overall:.3f}/{dynamic_threshold:.2f} (均分:{avg_absolute_score:.1f}分) | ✅触发 | {who}{extra} | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')} | 各维度: {dim_scores}")
                 else:
-                    logger.info(f"[心流] 📊 评分模式: {overall:.3f}/{dynamic_threshold:.2f} (均分:{avg_absolute_score:.1f}分) | ❌跳过 | {who}{extra} | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')} | 各维度: {dim_scores}")
+                    logger.debug(f"[心流] 📊 评分模式: {overall:.3f}/{dynamic_threshold:.2f} (均分:{avg_absolute_score:.1f}分) | ❌跳过 | {who}{extra} | 活跃度:{activity_desc}({activity:.0%}) | {thought or data.get('reasoning', '')} | 各维度: {dim_scores}")
                 return JudgeResult(
                     **scores, reasoning=data.get("reasoning", "") or thought,
                     should_reply=should_reply, confidence=overall, overall_score=overall,
