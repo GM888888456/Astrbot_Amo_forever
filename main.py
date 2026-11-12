@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.6.0"
+PLUGIN_VERSION = "7.6.1"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -15210,6 +15210,24 @@ class HumanCorePlugin(Star):
     CHARGE_MAX = 100000.0
 
     def _primary_uid(self) -> str:
+        """花钱要记在「人」身上，不能记到群里随便谁。
+
+        顺序：相恋关系的人 → 最近私聊的人 → 随便一个画像（最后兜底）。
+        之前直接取 ``list_profiles(limit=1)``，结果记到了列表里第一个陌生人头上。
+        """
+        try:
+            for uid in self._lover_aliases().values():
+                if uid:
+                    return str(uid)
+        except Exception:
+            pass
+        try:
+            umo = str(getattr(self, "_last_umo", "") or "") or self._first_private_umo()
+        except Exception:
+            umo = ""
+        parts = [part for part in str(umo).split(":") if part]
+        if len(parts) >= 3 and "group" not in str(umo).lower():
+            return parts[-1]
         try:
             rows = self.db.list_profiles(limit=1)
         except Exception:

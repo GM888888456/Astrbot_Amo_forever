@@ -138,6 +138,22 @@ class HubTests(unittest.TestCase):
         result = run(obj.charge(10, "x"))
         self.assertFalse(result["ok"])
 
+    def test_expense_goes_to_lover_not_first_profile(self):
+        """花钱记在相恋的人身上，不能记到列表里第一个陌生人头上。"""
+        obj, _ = build(balance=1000)
+        obj.db = type("DB", (), {
+            "list_profiles": lambda self, *a, **k: [{"uid": "stranger"}],
+        })()
+        obj._lover_aliases = lambda: {"阿墨": "lover-uid"}
+        self.assertEqual(obj._primary_uid(), "lover-uid")
+
+    def test_primary_uid_falls_back_to_private_umo(self):
+        obj, _ = build(balance=1000)
+        obj.db = type("DB", (), {"list_profiles": lambda self, *a, **k: []})()
+        obj._lover_aliases = lambda: {}
+        obj._last_umo = "aiocqhttp:FriendMessage:3261748099"
+        self.assertEqual(obj._primary_uid(), "3261748099")
+
     def test_charge_same_request_id_charges_once(self):
         """同一个幂等号重试只扣一次（医疗重试/网络重发都走这里）。"""
         obj, fake = build(balance=1000)
