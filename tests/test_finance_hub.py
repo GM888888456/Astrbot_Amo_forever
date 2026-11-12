@@ -32,6 +32,22 @@ class FakeState:
         self.health = {"status": status, "note": note}
 
 
+class FakeDB:
+    """最小的 kv + 画像桩：幂等号要落在这上面。"""
+
+    def __init__(self):
+        self.kv = {}
+
+    def kv_get(self, key, default=None):
+        return self.kv.get(key, default)
+
+    def kv_set(self, key, value):
+        self.kv[key] = value
+
+    def list_profiles(self, limit=1):
+        return [{"uid": "u1"}]
+
+
 class FakeFinance:
     """假的金融插件：能扣就扣，余额不够返回 ok=False。"""
 
@@ -39,8 +55,8 @@ class FakeFinance:
         self.balance_value = balance
         self.calls = []
 
-    def charge(self, amount, reason="", payee=""):
-        self.calls.append(("charge", amount, reason, payee))
+    def charge(self, amount, reason="", payee="", request_id=None):
+        self.calls.append(("charge", amount, reason, payee, request_id))
         if self.balance_value >= amount:
             self.balance_value -= amount
             return {"ok": True, "balance": round(self.balance_value, 2)}
@@ -70,6 +86,7 @@ def build(plugin_available=True, balance=1000.0):
 
     obj = M.HumanCorePlugin.__new__(M.HumanCorePlugin)
     obj.state = FakeState()
+    obj.db = FakeDB()
     fake = FakeFinance(balance)
     obj.context = type("Ctx", (), {
         "get_registered_star": lambda self, name: type(
@@ -124,6 +141,27 @@ class HubTests(unittest.TestCase):
         self.assertAlmostEqual(obj.state.finance["balance"], 888.0)
         self.assertEqual(obj.state.finance["fixed_total"], 4000)
 
+    def test_health_synced_from_medical_not_overwritten(self):
+        """医疗说「恢复中」，终端就写恢复中，别抢着改健康。"""
+        obj, _ = build()
+        obj.state = type("S", (), {"health": {}})()
+        obj.state.set_health = lambda status, hours=24, note="": setattr(
+            obj.state, "health", {"status": status, "note": note})
+        fake = type("Med", (), {
+            "status": lambda self: {"status": "恢复中", "note": "刚看完病", "until": 0},
+        })()
+        obj._medical = lambda: fake
+        obj._sync_health_from_medical()
+        self.assertEqual(obj.state.health["status"], "恢复中")
+        self.assertEqual(obj.state.health["note"], "刚看完病")
+
+    def test_health_sync_noop_without_medical(self):
+        obj, _ = build()
+        obj.state = type("S", (), {"health": {}})()
+        obj._medical = lambda: None
+        obj._sync_health_from_medical()
+        self.assertEqual(obj.state.health, {})
+
     def test_income(self):
         obj, fake = build(balance=100)
         result = run(obj.income(500, "稿费"))
@@ -170,6 +208,61 @@ class HubTests(unittest.TestCase):
         run(obj.charge(200, "看病", "医院", request_id="med-1"))
         run(obj.charge(200, "买药", "药房", request_id="med-2"))
         self.assertAlmostEqual(fake.balance_value, 600.0)
+
+    def test_failed_charge_is_not_cached_forever(self):
+        """余额不足那次不能把这笔锁死：补了钱，同一个幂等号还要能扣。"""
+        obj, fake = build(balance=100)
+        first = run(obj.charge(500, "看病", "医院", request_id="med-r1"))
+        self.assertFalse(first["ok"])
+        fake.balance_value = 1000      # 补钱
+        obj.CHARGE_FAIL_TTL = 0.0      # 失败单只在内存挡 60 秒并发，过期就允许重试
+        second = run(obj.charge(500, "看病", "医院", request_id="med-r1"))
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(len(fake.calls), 2, "失败单必须允许重试")
+        self.assertAlmostEqual(fake.balance_value, 500.0)
+
+    def test_failed_charge_blocks_concurrent_retry_briefly(self):
+        """同一秒内重复重试不重复打金融（挡并发），但不是永久。"""
+        obj, fake = build(balance=100)
+        run(obj.charge(500, "看病", "医院", request_id="med-r2"))
+        again = run(obj.charge(500, "看病", "医院", request_id="med-r2"))
+        self.assertFalse(again["ok"])
+        self.assertEqual(len(fake.calls), 1)
+        # 把 TTL 调成 0，等于「过期了」，应重新去扣
+        obj.CHARGE_FAIL_TTL = 0.0
+        run(obj.charge(500, "看病", "医院", request_id="med-r2"))
+        self.assertEqual(len(fake.calls), 2)
+
+    def test_success_is_persisted_across_restart(self):
+        """成功单写进 kv：插件重建（=重启）后同一个号也不再扣。"""
+        obj, fake = build(balance=1000)
+        run(obj.charge(200, "看病", "医院", request_id="med-keep"))
+        self.assertIn("med-keep", obj.db.kv.get("charge_ok", {}))
+        # 换一个实例，但共用同一个库（模拟重启）
+        obj2, fake2 = build(balance=1000)
+        obj2.db = obj.db
+        result = run(obj2.charge(200, "看病", "医院", request_id="med-keep"))
+        self.assertTrue(result["ok"])
+        self.assertTrue(result.get("repeated"))
+        self.assertEqual(fake2.calls, [], "重启后不能再扣一次")
+
+    def test_repeated_charge_not_written_to_memory_twice(self):
+        obj, fake = build(balance=1000)
+        obj.db = type("DB", (), {
+            "kv": {}, "kv_get": lambda self, k, d=None: self.kv.get(k, d),
+            "kv_set": lambda self, k, v: self.kv.__setitem__(k, v),
+            "list_profiles": lambda self, limit=1: [{"uid": "u1"}],
+        })()
+        seen = []
+
+        async def fake_write(uid, content, kind="fact", tier=1, scope="private", group_id=""):
+            seen.append(content)
+            return True
+
+        obj._write_memory_checked = fake_write
+        run(obj.charge(200, "看病", "医院", request_id="med-mem"))
+        run(obj.charge(200, "看病", "医院", request_id="med-mem"))
+        self.assertEqual(len(seen), 1, "同一笔只该记一次")
 
     def test_charge_rejects_bad_amount(self):
         obj, fake = build(balance=1000)

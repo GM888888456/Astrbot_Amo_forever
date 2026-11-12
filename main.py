@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.6.8"
+PLUGIN_VERSION = "7.6.9"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -2868,6 +2868,16 @@ class HumanState:
         self.db.kv_set("health", self.health)
 
     def roll_health(self):
+        # 装了医疗插件就由它管病情：这里不再自己掷骰子，只同步它的状态。
+        # 否则两边各存一份身体状态，她这边说「恢复中」、那边已经「健康」。
+        medical_getter = getattr(self.p, "_medical", None)
+        if callable(medical_getter):
+            try:
+                if medical_getter() is not None:
+                    self.p._sync_health_from_medical()
+                    return
+            except Exception as exc:
+                logger.debug("[amo] 同步医疗状态失败: %s" % exc)
         if not self.p.cfg_bool("enable_sick_random", True):
             return
         now = now_ts()
@@ -15283,13 +15293,53 @@ class HumanCorePlugin(Star):
             rows = []
         return str(rows[0].get("uid") or "") if rows else ""
 
+    #: 失败单只在内存里留 60 秒（挡并发重试）；成功单才持久化。
+    CHARGE_FAIL_TTL = 60.0
+    #: 持久化多少条成功幂等号（够覆盖「重启后重试同一笔」就行）。
+    CHARGE_OK_KEEP = 200
+
     def _charge_cache_get(self, request_id):
+        """查幂等号。
+
+        - 成功单：内存 + 磁盘（``charge_ok``），重启后同一笔不会再扣；
+        - 失败单：只留 60 秒，补钱之后能重试——永久缓存失败等于把这笔锁死。
+        """
+        if not request_id:
+            return None
         cache = getattr(self, "_charge_cache", None) or {}
-        hit = cache.get(request_id) if request_id else None
-        return dict(hit) if isinstance(hit, dict) else None
+        hit = cache.get(request_id)
+        if isinstance(hit, dict):
+            return dict(hit)
+        try:
+            stored = self.db.kv_get("charge_ok", {}) or {}
+        except Exception:
+            stored = {}
+        entry = stored.get(request_id) if isinstance(stored, dict) else None
+        if isinstance(entry, dict) and entry.get("ok"):
+            return dict(entry)
+        fail = (getattr(self, "_charge_fail", None) or {}).get(request_id)
+        if isinstance(fail, tuple) and len(fail) == 2:
+            ts, result = fail
+            if time.time() - to_float(ts, 0) <= self.CHARGE_FAIL_TTL:
+                return dict(result)
+            try:
+                self._charge_fail.pop(request_id, None)
+            except Exception:
+                pass
+        return None
 
     def _charge_cache_put(self, request_id, result):
         if not request_id:
+            return
+        if not result.get("ok"):
+            fail = getattr(self, "_charge_fail", None)
+            if fail is None:
+                fail = {}
+                self._charge_fail = fail
+            fail[request_id] = (time.time(), dict(result))
+            if len(fail) > 200:
+                for key in list(fail)[:50]:
+                    fail.pop(key, None)
             return
         cache = getattr(self, "_charge_cache", None)
         if cache is None:
@@ -15299,6 +15349,18 @@ class HumanCorePlugin(Star):
         if len(cache) > 200:
             for key in list(cache)[:50]:
                 cache.pop(key, None)
+        try:
+            stored = self.db.kv_get("charge_ok", {}) or {}
+            if not isinstance(stored, dict):
+                stored = {}
+            stored[request_id] = dict(result, ts=time.time())
+            if len(stored) > self.CHARGE_OK_KEEP:
+                oldest = sorted(stored, key=lambda k: to_float((stored.get(k) or {}).get("ts"), 0))
+                for key in oldest[: max(1, len(stored) - self.CHARGE_OK_KEEP)]:
+                    stored.pop(key, None)
+            self.db.kv_set("charge_ok", stored)
+        except Exception as exc:
+            logger.debug("[amo] 幂等号落库失败: %s" % exc)
 
     async def charge(self, amount, reason: str = "", payee: str = "",
                      request_id: str = "", source: str = "", detail: str = "",
@@ -15329,7 +15391,15 @@ class HumanCorePlugin(Star):
             result = {"ok": False, "code": "no_finance", "reason": "没有金融插件", "balance": 0}
         else:
             try:
-                result = await asyncio.to_thread(plugin.charge, value, reason, payee)
+                try:
+                    # 幂等号一起交给金融：它才是账本，重启后也认得出这笔扣过没有
+                    result = await asyncio.to_thread(
+                        plugin.charge, value, reason, payee, request_id=rid or None)
+                except TypeError as exc:
+                    if "request_id" not in str(exc):
+                        raise
+                    # 老版本金融不认识 request_id：退回三参数
+                    result = await asyncio.to_thread(plugin.charge, value, reason, payee)
             except Exception as exc:
                 logger.warning("[amo] 扣款调用失败: %s" % exc)
                 result = {"ok": False, "code": "call_failed", "reason": "扣款出错"}
@@ -15339,7 +15409,8 @@ class HumanCorePlugin(Star):
         result.setdefault("transaction_id", rid or ("amo" + uuid.uuid4().hex[:10]))
         self._sync_finance()
         self._charge_cache_put(rid, result)
-        await self._record_expense(value, reason, detail, source, result, uid)
+        if not result.get("repeated"):
+            await self._record_expense(value, reason, detail, source, result, uid)
         return result
 
     async def _record_expense(self, amount, reason, detail, source, result, uid=""):
@@ -15465,6 +15536,33 @@ class HumanCorePlugin(Star):
             return
         logger.info("[amo] 从人格读到月薪 %.0f，已交给金融" % gross)
 
+    def _sync_health_from_medical(self) -> None:
+        """身体状态以医疗插件为准。
+
+        医疗说「恢复中」就写恢复中，别抢着改成健康——否则人格资料里会出现
+        「刚看完病」和「身体：健康」并存的自相矛盾。
+        """
+        medical = self._medical()
+        if medical is None:
+            return
+        try:
+            info = medical.status()
+        except Exception:
+            return
+        status = str(info.get("status") or "").strip() or "健康"
+        note = str(info.get("note") or "")
+        current = self.state.health or {}
+        if str(current.get("status") or "") == status and str(current.get("note") or "") == note:
+            return
+        hours = 0
+        try:
+            until = float(info.get("until") or 0)
+            if until > time.time():
+                hours = max(1, int((until - time.time()) / 3600.0) + 1)
+        except Exception:
+            hours = 0
+        self.state.set_health(status, hours, note)
+
     async def _maybe_treat(self) -> None:
         """换成医疗插件管的病情后，由它决定治不治、钱够不够。
 
@@ -15497,7 +15595,8 @@ class HumanCorePlugin(Star):
         if result.get("ok"):
             logger.info("[amo] 去看了病：%s，自付 %.0f"
                         % (result.get("name"), float(result.get("self_pay") or 0)))
-            self.state.set_health("健康", 0, "")
+            # 状态交给医疗插件：它说「恢复中」就写恢复中
+            self._sync_health_from_medical()
         else:
             self.state.nudge(焦虑=8, 郁闷=4)
 
