@@ -1516,23 +1516,11 @@
     "default": 0.05,
     "hint": "识别不出具体活动时兜底用。睡觉、洗澡、开会、加班、上课、考试一律不发（概率 0）。"
   },
-  "image_share_group_daily_limit": {
-    "type": "int",
-    "description": "【发图】群聊每天最多几张（所有群共用）",
-    "default": 10,
-    "hint": "私聊不限量、不冷却；群聊按这个总数共用，防止刷屏。0=不限。"
-  },
-  "image_share_private_daily_limit": {
-    "type": "int",
-    "description": "【发图】私聊每天最多几张（0 = 不限）",
-    "default": 0,
-    "hint": "私聊默认完全不限、不冷却；想控制花费用这个软上限，例如填 8。群聊的额度看上面那条（所有群共用）。"
-  },
   "image_share_cooldown_minutes": {
     "type": "int",
     "description": "两次之间至少间隔（分钟）",
     "default": 180,
-    "hint": "硬冷却，不管概率多大都不越过。0=不限制（不建议）。"
+    "hint": "硬冷却，不管概率多大都不越过。0=不限制（不建议）。\n\n每天发几张由「相片」插件说了算（私聊默认不限、群聊按群每日上限），这里只管冷却和概率，不重复计数。"
   },
   "image_share_quote": {
     "type": "bool",
