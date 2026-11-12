@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.9.1"
+PLUGIN_VERSION = "8.0.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -9277,9 +9277,81 @@ class HumanCorePlugin(Star):
                     await self._apply_user_schedule_change(event.unified_msg_origin, raw_text)
             except Exception:
                 pass
+            try:
+                if raw_text and await self._handle_money_gift(event, raw_text):
+                    return
+            except Exception as exc:
+                logger.debug("[amo] 收款处理失败: %s" % exc)
             await self._handle_message(event)
         except Exception:
             logger.exception("[amo] 消息处理异常")
+
+    #: 他给钱的说法：模板 [转账]多少钱 / [红包]多少钱，也认不带括号的
+    MONEY_TEMPLATES = (
+        (re.compile(r"[\[【(（]\s*转账\s*[\]】)）]\s*(\d+(?:\.\d+)?)\s*(万)?"), "transfer"),
+        (re.compile(r"^\s*转账\s*(\d+(?:\.\d+)?)\s*(万)?"), "transfer"),
+        (re.compile(r"[\[【(（]\s*红包\s*[\]】)）]\s*(\d+(?:\.\d+)?)\s*(万)?"), "red"),
+        (re.compile(r"^\s*红包\s*(\d+(?:\.\d+)?)\s*(万)?"), "red"),
+    )
+
+    def _parse_money_gift(self, text):
+        """从消息里认出「他给我钱」。返回 (channel, amount) 或 None。"""
+        body = str(text or "").strip()
+        if not body:
+            return None
+        for pattern, channel in self.MONEY_TEMPLATES:
+            match = pattern.search(body)
+            if not match:
+                continue
+            try:
+                amount = float(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if (match.group(2) or "") == "万":
+                amount *= 10000
+            if amount <= 0:
+                continue
+            return channel, round(amount, 2)
+        return None
+
+    async def _handle_money_gift(self, event, text) -> bool:
+        """他转钱/发红包给她：算借款，走金融账本。
+
+        返回 True 表示这条消息已经处理完（不用再进聊天链路）。
+        """
+        parsed = self._parse_money_gift(text)
+        if not parsed:
+            return False
+        channel, amount = parsed
+        plugin = self._finance()
+        borrower = getattr(plugin, "borrow", None) if plugin is not None else None
+        if not callable(borrower):
+            return False
+        try:
+            result = borrower(amount, channel, str(event.get_sender_id() or ""))
+        except Exception as exc:
+            logger.warning("[amo] 借款失败: %s" % exc)
+            result = {"ok": False, "reason": "账本没响应"}
+        if not result.get("ok"):
+            reason = result.get("reason") or "借不了"
+            left = result.get("left")
+            if isinstance(left, dict) and left.get("transfer_left") is not None:
+                reason += "（今天还能转 %.0f）" % float(left.get("transfer_left") or 0)
+            yield_text = "这个我收不下：" + reason
+        else:
+            kind = "红包" if result.get("channel") == "red" else "转账"
+            yield_text = "收了你的%s %.0f，我记着欠你 %.0f。" % (
+                kind, float(result.get("amount") or 0), float(result.get("owed") or 0))
+        try:
+            await self.context.send_message(event.unified_msg_origin, yield_text)
+        except Exception as exc:
+            logger.debug("[amo] 回执发送失败: %s" % exc)
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+        self._sync_finance()
+        return True
 
     async def _learn_relations(self, event, text, uid):
         """从对话里认关系：他说「小明是我同事」就记一条边。
@@ -10258,6 +10330,30 @@ class HumanCorePlugin(Star):
             cash = 0.0
         return "【钱】你卡里还有 ¥%.0f（这是你自己的钱，花之前心里有数）" % cash
 
+    def _borrow_line(self) -> str:
+        """没钱的时候她得开口借——他转过来才算借款，不会凭空有钱。"""
+        try:
+            cash = float((self.state.finance or {}).get("balance") or 0)
+        except Exception:
+            cash = 0.0
+        if cash >= 500:
+            return ""
+        plugin = self._finance()
+        info = {}
+        reader = getattr(plugin, "borrow_info", None) if plugin is not None else None
+        if callable(reader):
+            try:
+                info = reader() or {}
+            except Exception:
+                info = {}
+        return (
+            "【没钱了】卡里只剩 ¥%.0f，你又不想跟他哭穷得太难看。可以开口借："
+            "告诉他转账还是红包（转账每天最多一万，红包单个最多 200、累计最多一万），"
+            "他会用「[转账]多少钱」或「[红包]多少钱」给你。这是**借款**，你记得要还"
+            "（已经欠他 ¥%.0f）。"
+            % (cash, float(info.get("owed") or 0))
+        )
+
     def _invest_line(self) -> str:
         """她知道自己有股票、持了什么、今天赚赔——不然用户让她买，她完全不知道有这回事。"""
         inv = getattr(self.state, "invest", None) or {}
@@ -10364,6 +10460,7 @@ class HumanCorePlugin(Star):
             "【天气一致】你的天气以【天气】为准；不要说出和它相反的冷热（除非刚进出空调房/室内）。",
             "【正在】" + snap["activity"].get("activity", "休息") + "（" + self._short_place(snap["activity"].get("place", "家")) + "）",
             self._money_line(),
+            *([self._borrow_line()] if self._borrow_line() else []),
             self._invest_line(),
             "【地点写法】地点是你自己的事，说的时候用口语（“商场餐厅”“咖啡店”“家”），不要把“城市·地点”这种内部写法念出来。",
             "【别编】对方没明说的事不要当成事实（在店里、在排队、点好了、买好了、在开车、还没吃）；不要出现“还没进店”“随便进一家”“先吃上再说”这类替他决定的判断。",
