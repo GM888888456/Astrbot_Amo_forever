@@ -1067,8 +1067,13 @@
       document.getElementById("activityBar").style.width = activityPct + "%";
 
       const counts = data.counts || {};
-      document.getElementById("counts").textContent =
-        "档案 " + (counts.profiles || 0) + " · 记忆 " + (counts.memories || 0) + " · 消息 " + (counts.messages || 0);
+      // 8.0.0 精简面板时删掉了页脚 #counts，这里必须容忍元素不存在，
+      // 否则 render() 抛 TypeError，整个 load() 失败，打开面板只看到「接口未连接」。
+      const countsEl = document.getElementById("counts");
+      if (countsEl) {
+        countsEl.textContent =
+          "档案 " + (counts.profiles || 0) + " · 记忆 " + (counts.memories || 0) + " · 消息 " + (counts.messages || 0);
+      }
     }
 
     let currentScheduleDay = "";
