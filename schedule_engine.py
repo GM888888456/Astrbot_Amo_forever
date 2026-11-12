@@ -414,22 +414,8 @@ class ScheduleEngine:
         except Exception:
             pass
         profile = dict(base)
-        profile["has_gift_car"] = False
-        profile["has_gift_home"] = False
-        try:
-            gift = getattr(self.p, "gift", None)
-            if gift is not None:
-                car_gift = gift.asset_override("vehicle")
-                if car_gift:
-                    profile["car"] = car_gift
-                    profile["has_gift_car"] = True
-                home_gift = gift.asset_override("home")
-                if home_gift:
-                    profile["has_gift_home"] = True
-                    profile["home"] = (home_gift if str(home_gift) not in ("房", "房子", "住宅", "楼", "小区")
-                                       else "新家")
-        except Exception:
-            pass
+        # 有没有车只看配置里的「角色资产」，不再由礼物决定
+        profile["has_car"] = bool(cfg_car)
         return profile
 
     @staticmethod
@@ -540,11 +526,7 @@ class ScheduleEngine:
             "home": home,
             "workplace": workplace,
             "car": car,
-            "has_gift_car": bool(profile.get("has_gift_car")),
-            "has_gift_home": bool(profile.get("has_gift_home")),
-            "assets": self._gift_assets(cfg_assets),
-            "worn": self._gift_worn(),
-            "gift_log": self._gift_log(),
+            "has_car": bool(profile.get("has_car")),
             "mood": mood_now,
             "period": dict(period or {}),
             "health": dict(health or {}),
@@ -557,101 +539,6 @@ class ScheduleEngine:
             "seed": seed,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-
-    def _gift_assets(self, extra=""):
-        """他送的大件（车/房/贵重）+ 配置里的角色资产，写进日程上下文。"""
-        items = []
-        extra = str(extra or "").strip()
-        if extra:
-            items.append(extra)
-        try:
-            gift = getattr(self.p, "gift", None)
-            if gift is not None:
-                text = gift.asset_text()
-                if text:
-                    items.append(text)
-        except Exception:
-            pass
-        return "、".join([item for item in items if item])
-
-    def _gift_worn(self):
-        """他送的小件里能穿戴的（手表/围巾/包/口红），写进日程上下文。"""
-        try:
-            gift = getattr(self.p, "gift", None)
-            if gift is not None:
-                return gift.worn_text()
-        except Exception:
-            pass
-        return ""
-
-    @staticmethod
-    def _gift_mention_hours(ctx):
-        """每天最多两个整点允许在日记里提他送的礼物。
-
-        按日期固定，避免每小时都在写"捏着挂件/戴着围巾"，把礼物写成了强迫症。
-        """
-        day = str((ctx or {}).get("day") or "")
-        seed = str((ctx or {}).get("seed") or "")
-        rnd = random.Random("%s|%s" % (day, seed))
-        pool = list(range(9, 22))
-        first = rnd.choice(pool)
-        second = rnd.choice([h for h in pool if abs(h - first) >= 2] or pool)
-        return {first, second}
-
-    @staticmethod
-    def _use_gift_today(ctx, label):
-        """同一天同一件东西固定选择：六成用他送的，四成用自己的。"""
-        day = str(ctx.get("day") or "")
-        if not day:
-            return True
-        return md5_int(day + "|wear|" + label) % 10 < 6
-
-    @staticmethod
-    def _wear_phrase(label, gifted):
-        if label == "包":
-            return "背着包（他送的）" if gifted else "背着包"
-        return ("戴了%s（他送的）" if gifted else "戴了%s") % label
-
-    def _apply_gift_effects(self, items, ctx):
-        """出门时写穿戴：他送的标「他送的」；自己的只写通用名。"""
-        temp = (ctx.get("weather") or {}).get("temp")
-        labels = []
-        gift = getattr(self.p, "gift", None)
-        if gift is not None:
-            try:
-                labels = gift.wear_labels(temp)
-            except Exception:
-                labels = []
-        own = ["围巾"] if temp is not None and float(temp) <= 20 else []
-        if not labels and not own:
-            return items
-        extras = []
-        for label in labels:
-            extras.append(self._wear_phrase(label, self._use_gift_today(ctx, label)))
-        for label in own:
-            if label not in labels:
-                extras.append(self._wear_phrase(label, False))
-        suffix = "；".join(extras)
-        for item in items:
-            if item.get("category") not in ("commute", "play"):
-                continue
-            place = str(item.get("place") or "")
-            if not place or place == "家" or place.startswith("家"):
-                continue
-            detail = str(item.get("detail") or "").strip()
-            if suffix and suffix not in detail:
-                item["detail"] = (detail + "；" + suffix).strip("；")
-        return items
-
-    def _gift_log(self):
-        """带日期的礼物记录，让日程日记有迹可查。"""
-        try:
-            gift = getattr(self.p, "gift", None)
-            if gift is not None:
-                return gift.gift_log_text()
-        except Exception:
-            pass
-        return ""
 
     def yesterday_summary(self, day):
         """读取昨日遗留：熬夜、睡眠不足、生病，今天必须疲惫。"""
@@ -872,7 +759,6 @@ class ScheduleEngine:
         items = self._expand(segments, ctx)
         items = self._fill_activities(items, ctx)
         items = self._smooth_moods(items, ctx)
-        items = self._apply_gift_effects(items, ctx)
         items = self._validate(items, ctx)
         return items
 
@@ -892,7 +778,7 @@ class ScheduleEngine:
         late = bool((ctx.get("yesterday") or {}).get("late_night"))
         sick = bool((ctx.get("health") or {}).get("sick"))
         wake = "赖床、起不来" if late else "起床洗漱、吃早餐"
-        has_car = bool(ctx.get("has_gift_car"))
+        has_car = bool(ctx.get("has_car"))
         if has_car:
             commute = "开车去公司"
         elif sick:
@@ -1666,29 +1552,6 @@ class ScheduleEngine:
             car_line = "这一小时是开%s；必须写清堵车、找停车位或路上的细节。" % item.get("vehicle")
         if item.get("detail"):
             car_line = (car_line + " 可以用的细节：%s。" % item.get("detail")).strip()
-        asset_line = ""
-        assets = str(ctx.get("assets") or "").strip()
-        if assets:
-            asset_line = ("他送你的东西：%s。写这一小时时可以自然戴/用/开，"
-                          "但不要每段都提，也不要写你还想要更大的。" % assets)
-        allow_gift = False
-        try:
-            hour = int(str(item.get("start") or "")[:2])
-            allow_gift = hour in self._gift_mention_hours(ctx)
-        except (TypeError, ValueError):
-            allow_gift = False
-        worn_line = ""
-        worn = str(ctx.get("worn") or "").strip()
-        if worn:
-            if allow_gift:
-                worn_line = "你今天身上/包里有：%s（他送的）。这一小时可以自然带一句，只提一句，别写成交代行踪。" % worn
-            else:
-                worn_line = "这一小时不要主动提他送的东西（今天已经提过了）；除非上一小时写了、这一小时要承接。"
-        gift_line = ""
-        gift_log = str(ctx.get("gift_log") or "").strip()
-        if gift_log and allow_gift:
-            gift_line = ("他送过你的东西（日期）：%s。这一小时可以自然带一句；"
-                         "日期不是今天的，不要写成今天送的。" % gift_log)
         return (
             "角色设定：\n" + _brief_world(ctx.get("world") or {}) + "\n"
             "今天：%s，%s；天气：%s；所在地：%s。\n"
@@ -1700,9 +1563,6 @@ class ScheduleEngine:
             "下一小时：%s\n"
             "突发事件：%s\n"
             "景区信息：%s\n"
-            "%s\n"
-            "%s\n"
-            "%s\n"
             "%s\n"
             "请写一段 120-260 字的第一人称小日记，要求：\n"
             "1. 只写这一小时，不要提前写下一小时；\n"
@@ -1730,9 +1590,6 @@ class ScheduleEngine:
             event.get("note") or "无",
             _scenic_text(scenic),
             car_line,
-            asset_line,
-            worn_line,
-            gift_line,
         )
 
     @staticmethod

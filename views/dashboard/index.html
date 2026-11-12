@@ -409,13 +409,6 @@
             <path d="M12 7.2v2.6M10.2 13.4 6.6 15.6M13.8 13.4l3.6 2.2"/>
           </svg>
         </button>
-        <button class="tab icon-tab" id="btnGiftIcon" data-tab="gift" title="礼物" aria-label="礼物">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5 10h14v9H5z"/><path d="M3.5 7h17v3h-17z"/><path d="M12 7v12"/>
-            <path d="M12 7C10.2 3.8 6.3 4.3 6.3 6.6c0 1.5 2.8 1.9 5.7 1.9Z"/>
-            <path d="M12 7c1.8-3.2 5.7-2.7 5.7-.4 0 1.5-2.8 1.9-5.7 1.9Z"/>
-          </svg>
-        </button>
         <button class="tab icon-tab" id="btnStatusIcon" data-tab="status" title="状态" aria-label="状态">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
             <path d="M2.5 12h4l2.2-5.5 3.1 11 2.3-5.5h5.4"/>
@@ -540,22 +533,6 @@
           <button id="btnDeleteProfile" class="danger">删除画像</button>
         </div>
         <div id="profileMemories" class="memory-list"></div>
-      </section>
-    </div>
-
-    <div id="tab-gift" class="tab-panel" hidden>
-      <section class="card">
-        <div class="row between">
-          <div>
-            <div class="label">礼物墙</div>
-            <div class="sub" id="giftSub">他送过的东西 · 她最近想要的</div>
-          </div>
-          <button class="tab" id="giftRefresh" type="button">刷新</button>
-        </div>
-        <div class="label" style="margin-top:12px">她最近想要</div>
-        <div id="giftWishes" class="profile-list"><div class="sub">加载中…</div></div>
-        <div class="label" style="margin-top:16px">收到的礼物</div>
-        <div id="giftList" class="profile-list"><div class="sub">加载中…</div></div>
       </section>
     </div>
 
@@ -2014,75 +1991,6 @@
       }
     }
 
-    function giftTime(ts) {
-      const value = Number(ts);
-      if (!value) return "";
-      const date = new Date(value * 1000);
-      const now = new Date();
-      const pad = (n) => String(n).padStart(2, "0");
-      if (date.toDateString() === now.toDateString()) return pad(date.getHours()) + ":" + pad(date.getMinutes());
-      return (date.getMonth() + 1) + "-" + pad(date.getDate()) + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
-    }
-
-    function giftRow(item, meta) {
-      const row = document.createElement("div");
-      row.className = "profile-item";
-      const name = document.createElement("div");
-      name.className = "name";
-      name.textContent = item;
-      const sub = document.createElement("div");
-      sub.className = "meta";
-      sub.textContent = meta;
-      row.appendChild(name);
-      row.appendChild(sub);
-      return row;
-    }
-
-    async function loadGift() {
-      const wishesBox = document.getElementById("giftWishes");
-      const giftsBox = document.getElementById("giftList");
-      if (!wishesBox || !giftsBox) return;
-      wishesBox.innerHTML = '<div class="sub">加载中…</div>';
-      giftsBox.innerHTML = '<div class="sub">加载中…</div>';
-      try {
-        const data = objectFrom(await call("gift"));
-        const wishes = Array.isArray(data.wishes) ? data.wishes : [];
-        const gifts = Array.isArray(data.gifts) ? data.gifts : [];
-        wishesBox.innerHTML = "";
-        giftsBox.innerHTML = "";
-        if (data.enabled === false) {
-          const tip = giftRow("礼物功能未开启", "在「基础」里打开 gift_enable");
-          wishesBox.appendChild(tip);
-          return;
-        }
-        if (!wishes.length) {
-          wishesBox.appendChild(giftRow("还没有心愿", "她逛街看到喜欢的小东西时会记下来"));
-        } else {
-          wishes.forEach((wish) => {
-            const meta = [giftTime(wish.ts), wish.place || ""].filter(Boolean).join(" · ");
-            wishesBox.appendChild(giftRow(wish.item || "", meta));
-          });
-        }
-        if (!gifts.length) {
-          giftsBox.appendChild(giftRow("还没有收到的礼物", "说一句「送围巾」试试"));
-        } else {
-          gifts.forEach((gift) => {
-            const kind = { small: "小礼物", valuable: "贵重小件", vehicle: "车", home: "房", luxury: "贵重" }[gift.kind] || "礼物";
-            const meta = [kind, giftTime(gift.ts), gift.where || ""].filter(Boolean).join(" · ");
-            giftsBox.appendChild(giftRow(gift.item || "", meta));
-          });
-        }
-        const sub = document.getElementById("giftSub");
-        if (sub) sub.textContent = "心愿 " + wishes.length + " 件 · 礼物 " + gifts.length + " 件";
-      } catch (error) {
-        wishesBox.textContent = "";
-        const sub = document.createElement("div");
-        sub.className = "sub";
-        sub.textContent = "读取失败：" + (error && error.message ? error.message : "接口未就绪");
-        wishesBox.appendChild(sub);
-      }
-    }
-
     function objectFrom(res) {
       if (res && res.data && typeof res.data === "object" && !Array.isArray(res.data)) return res.data;
       return res && typeof res === "object" ? res : {};
@@ -2107,7 +2015,6 @@
       if (name === "world") loadWorld();
       if (name === "schedule") loadSchedule();
       if (name === "profiles") loadProfiles();
-      if (name === "gift") loadGift();
       if (name === "diary") loadDiary();
       if (name === "usage") loadUsage();
       if (name === "relations") openNeuron();
@@ -2125,8 +2032,6 @@
     tabButtons.forEach((button) => button.addEventListener("click", () => showTab(button.dataset.tab, button.dataset.group, button)));
     const usageRefreshButton = document.getElementById("usageRefresh");
     if (usageRefreshButton) usageRefreshButton.addEventListener("click", () => loadUsage(true));
-    const giftRefreshButton = document.getElementById("giftRefresh");
-    if (giftRefreshButton) giftRefreshButton.addEventListener("click", () => loadGift());
 
     // ---- 照片页（全屏）；心流/时间做一级页内视图；关系图做一级标签页 ----
     const sheet = document.getElementById("controlSheet");
@@ -2450,7 +2355,7 @@
       const uid = (currentProfileUid || document.getElementById("pUid").value || "").trim();
       if (!uid) { toast("还没有选中档案", true); return; }
       const name = document.getElementById("pName").value || uid;
-      if (!window.confirm("删除画像「" + name + "」？\n会一起删掉他的档案、消息、主动消息记录、渠道标记和礼物心愿，不可恢复。")) return;
+      if (!window.confirm("删除画像「" + name + "」？\n会一起删掉他的档案、消息、主动消息记录和渠道标记，不可恢复。")) return;
       try {
         const result = await call("profile_delete", { uid, confirm: 1 });
         const counts = (result && result.data && result.data.counts) || {};

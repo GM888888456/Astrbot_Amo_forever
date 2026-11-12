@@ -20,7 +20,7 @@ def _ctx(**kwargs):
         "home": "市区·家",
         "workplace": "市区·写字楼",
         "car": "",
-        "has_gift_car": False,
+        "has_car": False,
         "city": "东莞",
         "world": {"occupation": "普通上班族", "workplace": "市区·写字楼"},
         "yesterday": {},

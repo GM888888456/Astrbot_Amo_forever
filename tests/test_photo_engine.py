@@ -86,7 +86,6 @@ class FakePlugin:
         self.config = dict(cfg or {})
         self.db = FakeDB()
         self.state = FakeState()
-        self.gift = FakeGift()
         self.context = FakeContext(omni)
         self.admin_uids = set()
         self.plugin_dir = tempfile.mkdtemp(prefix="amo-tpl-")

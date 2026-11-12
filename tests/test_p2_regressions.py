@@ -22,7 +22,6 @@ from heartflow_engine import (  # noqa: E402
     clamp_score,
 )
 from relation_graph import spread_scores  # noqa: E402
-from gift_engine import GiftEngine  # noqa: E402
 
 
 class SegmentRegressionTests(unittest.TestCase):
@@ -101,43 +100,6 @@ class RelationHopTests(unittest.TestCase):
     def test_none_keeps_default_two_hops(self):
         scores = spread_scores(self.EDGES, "a", max_hops=None)
         self.assertIn(("b", "c"), scores)
-
-
-class GiftLoadTests(unittest.TestCase):
-    class _Plugin:
-        """只提供 GiftEngine.__init__ 需要的 plugin_dir / db.path。"""
-
-        def __init__(self, directory):
-            self.plugin_dir = directory
-
-            class _DB:
-                path = os.path.join(directory, "amo.db")
-
-            self.db = _DB()
-
-        def cfg_bool(self, key, default=False):
-            return default
-
-    def test_broken_json_logs_and_backups(self):
-        tmp = tempfile.mkdtemp(prefix="amo-gift-")
-        path = os.path.join(tmp, "gifts.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("{not json")
-        engine = GiftEngine(self._Plugin(tmp))
-        data = engine._load()
-        self.assertEqual(data["wishes"], [])
-        backups = [name for name in os.listdir(tmp) if ".broken-" in name]
-        self.assertTrue(backups, "解析失败的文件应被备份，而不是直接覆盖")
-
-    def test_non_list_fields_are_reset(self):
-        tmp = tempfile.mkdtemp(prefix="amo-gift-")
-        path = os.path.join(tmp, "gifts.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"wishes": {"oops": 1}, "gifts": "nope"}, fh)
-        engine = GiftEngine(self._Plugin(tmp))
-        data = engine._load()
-        self.assertEqual(data["wishes"], [])
-        self.assertEqual(data["gifts"], [])
 
 
 if __name__ == "__main__":

@@ -194,38 +194,6 @@ class PrivateWearGuardTests(unittest.TestCase):
         self.assertTrue(engine.can_change_to("红色连衣裙")[0])
 
 
-class GiftAffordancePlaceTests(unittest.TestCase):
-    """买了衣服/睡衣，在外面不能演「当场换上」。"""
-
-    def _engine(self, activity):
-        import gift_engine
-        tmp = tempfile.mkdtemp()
-        plugin = FakePlugin(tmp)
-        plugin.state = type("S", (), {"current_activity": lambda self: activity,
-                                      "weather": {}})()
-        return gift_engine.GiftEngine(plugin)
-
-    def test_pajama_while_outside(self):
-        engine = self._engine({"activity": "上班", "place": "公司", "zone": "office"})
-        hint = engine._private_gift_hint("粉色睡衣")
-        self.assertIn("不要说", hint)
-
-    def test_pajama_at_home(self):
-        engine = self._engine({"activity": "在家", "place": "家", "zone": "home"})
-        hint = engine._private_gift_hint("粉色睡衣")
-        self.assertNotIn("在外面", hint)
-
-    def test_clothing_while_outside(self):
-        engine = self._engine({"activity": "逛街", "place": "商场", "zone": "mall"})
-        hint = engine._affordance_text("米色外套", "今天好冷", 5)
-        self.assertIn("回家", hint)
-
-    def test_normal_item_unaffected(self):
-        engine = self._engine({"activity": "逛街", "place": "商场", "zone": "mall"})
-        hint = engine._affordance_text("手表", "现在几点", 15)
-        self.assertIn("表", hint)
-
-
 class IdPhotoPromptTests(unittest.TestCase):
     def test_prompt_keeps_identity_and_uses_clothes(self):
         plugin = object.__new__(amo_main.HumanCorePlugin)

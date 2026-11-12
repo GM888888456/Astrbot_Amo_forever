@@ -288,13 +288,6 @@ class PhotoEngine:
             return {}
 
     def _worn_text(self):
-        gift = getattr(self.plugin, "gift", None)
-        getter = getattr(gift, "worn_text", None) if gift is not None else None
-        if callable(getter):
-            try:
-                return str(getter() or "")
-            except Exception as _amo_exc:
-                _note_swallowed("photo_engine.PhotoEngine._worn_text", _amo_exc)
         return ""
 
     def _candidates(self):

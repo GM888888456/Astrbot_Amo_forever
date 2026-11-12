@@ -159,13 +159,7 @@ except Exception:
         def parse_weather_daily(*args, **kwargs):
             return []
 
-try:
-    from .gift_engine import GiftEngine
-except Exception:
-    try:
-        from gift_engine import GiftEngine
-    except Exception:
-        GiftEngine = None
+        # 天气模块没装上时的兜底（原来挂在礼物导入下面，礼物删掉后挪回来）
         def next_check_slot(*args, **kwargs):
             return ""
         def parse_clock(*args, **kwargs):
@@ -517,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.7.0"
+PLUGIN_VERSION = "7.8.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -531,7 +525,7 @@ except Exception:
 # 这些开关是面板/主链路的底座：隐藏开关并强制开启，避免误关后整块功能消失。
 FORCED_ON_CONFIG_KEYS = frozenset({
     "enable_group_reply", "enable_private_reply", "hf_enable_heartflow",
-    "seg_enable", "gift_enable", "diary_enabled", "usage_stats_enabled",
+    "seg_enable", "diary_enabled", "usage_stats_enabled",
 })
 
 #: 面板不展示、但仍可从配置文件改的键。
@@ -2683,6 +2677,7 @@ class HumanState:
         self.finance = self.db.kv_get("finance", {}) or {}
         if not isinstance(self.finance, dict):
             self.finance = {}
+        self.invest = {}
         self.worldview = self.db.kv_get("worldview", {}) or {}
         self.schedule = self.db.kv_get("schedule", {}) or {}
         self.schedule_ctx = self.db.kv_get("schedule_ctx", {}) or {}
@@ -5112,12 +5107,6 @@ class HumanCorePlugin(Star):
         self.state = None
         self.llm = LLMService(self)
         self.gate = ReplyGate(self)
-        self.gift = None
-        if GiftEngine is not None:
-            try:
-                self.gift = GiftEngine(self)
-            except Exception as exc:
-                logger.warning("[amo] 礼物引擎初始化失败: %s" % exc)
         self.wardrobe = None
         if Wardrobe is not None:
             try:
@@ -7417,13 +7406,6 @@ class HumanCorePlugin(Star):
         return ("【换装】他刚让你换衣服，你已经换上了「%s」。"
                 "用一两句话自然地说换好了（可以撒个娇、照镜子、问好不好看），不要解释设定。" % name)
 
-    def _is_owner_event(self, event):
-        if self.gift is not None:
-            try:
-                return bool(self.gift.is_owner(event))
-            except Exception:
-                pass
-        return False
 
     async def _maybe_share_image(self, event):
         """入口：只做判断，出图丢后台任务——绝不卡住回复链路。"""
@@ -10218,6 +10200,31 @@ class HumanCorePlugin(Star):
             out.append(part)
         return out
 
+    def _money_line(self) -> str:
+        """她知道自己有多少钱——不知道就会说出「我没钱」这种和账本矛盾的话。"""
+        try:
+            cash = float((self.state.finance or {}).get("balance") or 0)
+        except Exception:
+            cash = 0.0
+        return "【钱】你卡里还有 ¥%.0f（这是你自己的钱，花之前心里有数）" % cash
+
+    def _invest_line(self) -> str:
+        """她知道自己有股票、持了什么、今天赚赔——不然用户让她买，她完全不知道有这回事。"""
+        inv = getattr(self.state, "invest", None) or {}
+        positions = inv.get("positions") or []
+        if not positions:
+            return "【投资】你还没有持仓，闲钱可以买一点（别一把梭，别超过总资产三成）。"
+        parts = []
+        for pos in positions[:4]:
+            parts.append("%s %d股（%.1f%%）" % (
+                pos.get("name") or "?", int(pos.get("qty") or 0),
+                float(pos.get("pnl_pct") or 0)))
+        day = float(inv.get("day_pnl") or 0)
+        text = "【投资】你持有：" + "、".join(parts)
+        text += "；今天%s¥%.0f" % ("赚了" if day >= 0 else "亏了", abs(day))
+        text += "。有人问你股票、亏没亏、买没买，就照这个说，别装作没有这回事。"
+        return text
+
     async def _dynamic_context(self, event):
         await self._sync_persona_name(event)
         umo = event.unified_msg_origin
@@ -10306,6 +10313,8 @@ class HumanCorePlugin(Star):
             "【天气】" + snap["weather_text"],
             "【天气一致】你的天气以【天气】为准；不要说出和它相反的冷热（除非刚进出空调房/室内）。",
             "【正在】" + snap["activity"].get("activity", "休息") + "（" + self._short_place(snap["activity"].get("place", "家")) + "）",
+            self._money_line(),
+            self._invest_line(),
             "【地点写法】地点是你自己的事，说的时候用口语（“商场餐厅”“咖啡店”“家”），不要把“城市·地点”这种内部写法念出来。",
             "【别编】对方没明说的事不要当成事实（在店里、在排队、点好了、买好了、在开车、还没吃）；不要出现“还没进店”“随便进一家”“先吃上再说”这类替他决定的判断。",
             "【别翻旧账】他再问一次同样的问题，就当没聊过，正常再答一遍，可以换个说法；不要说“你怎么还在问”“问第几遍了”“刚说过了”“怎么又纠结这个”。",
@@ -10570,14 +10579,6 @@ class HumanCorePlugin(Star):
                 "不要把刚才的话换个说法再说一遍：最多补一句新的，或者一句带过（“嗯，就这么办”）。"
                 % int(max(1, now_ts() - last_at))
             )
-
-        if self.gift is not None:
-            try:
-                gift_hint = await self.gift.build_hint(event)
-                if gift_hint:
-                    parts.append(gift_hint)
-            except Exception as exc:
-                logger.debug("[amo] 礼物上下文失败: %s" % exc)
 
         try:
             wear_hint = await self._maybe_outfit_change(event)
@@ -10879,11 +10880,6 @@ class HumanCorePlugin(Star):
                         alerts[str(event.unified_msg_origin)] = now_ts()
             except Exception:
                 pass
-            if self.gift is not None:
-                try:
-                    self.gift.observe_reply(event, text)
-                except Exception as exc:
-                    logger.debug("[amo] 礼物心愿捕获失败: %s" % exc)
             # 先判断要不要补图：表情包/图片回复会被后面的非 Plain 检查提前 return，
             # 所以放在这里，保证「拍给我看看」即使她只回表情也能触发
             if self.draw is not None:
@@ -11141,6 +11137,10 @@ class HumanCorePlugin(Star):
             await self._maybe_push_salary()
         except Exception as exc:
             logger.debug("[amo] 薪资同步失败: %s" % exc)
+        try:
+            await self._note_invest_seed()
+        except Exception as exc:
+            logger.debug("[amo] 建仓记忆失败: %s" % exc)
         try:
             await self._sync_market_mood()
         except Exception as exc:
@@ -12980,28 +12980,6 @@ class HumanCorePlugin(Star):
         else:
             yield event.plain_result("⚠️ 没能写进记忆插件：请先在设置里选好记忆来源插件。")
 
-    @filter.command("礼物")
-    async def cmd_gift_list(self, event: AstrMessageEvent):
-        await self._ensure_ready()
-        if self.gift is None or not self.gift.enabled:
-            yield event.plain_result("礼物功能还没开。")
-            return
-        if not self.gift.is_owner(event):
-            yield event.plain_result("这个只给主人看哦。")
-            return
-        yield event.plain_result(self.gift.command_text())
-
-    @filter.command("送礼")
-    async def cmd_gift_send(self, event: AstrMessageEvent, item: str = ""):
-        await self._ensure_ready()
-        if self.gift is None or not self.gift.enabled:
-            yield event.plain_result("礼物功能还没开。")
-            return
-        if not self.gift.is_owner(event):
-            yield event.plain_result("这个只给主人用哦。")
-            return
-        yield event.plain_result(self.gift.manual_gift(event, item))
-
     # ---------- Web 面板 ----------
     def _register_web_apis(self):
         prefixes = uniq([
@@ -13118,8 +13096,6 @@ class HumanCorePlugin(Star):
             ("/kb_regen", self.api_kb_regen, ["GET", "POST"]),
             ("/schedule_regen", self.api_schedule_regen, ["GET", "POST"]),
             ("/weather", self.api_weather, ["GET"]),
-            ("/gift", self.api_gift, ["GET"]),
-            ("/gift/list", self.api_gift, ["GET"]),
             ("/worldview", self.api_worldview, ["GET"]),
             ("/worldview/regen", self.api_worldview_regen, ["GET", "POST"]),
             ("/worldview_regen", self.api_worldview_regen, ["GET", "POST"]),
@@ -14615,14 +14591,6 @@ class HumanCorePlugin(Star):
                 pass
         except Exception as exc:
             return {"code": 1, "msg": "删除失败：%s" % exc}
-        gift = getattr(self, "gift", None)
-        if gift is not None:
-            try:
-                removed = gift.purge_user(uid, umos)
-                if removed:
-                    counts["gifts"] = removed
-            except Exception as exc:
-                logger.debug("[amo] 删除档案时清理礼物失败: %s" % exc)
         try:
             if str(getattr(self, "_last_umo", "") or "") in umos:
                 self._last_umo = ""
@@ -15166,16 +15134,6 @@ class HumanCorePlugin(Star):
             }
         return {"code": 0, "msg": "知识库已就绪：" + self._dialect_kb_name()}
 
-    async def api_gift(self):
-        await self._ensure_ready()
-        if self.gift is None:
-            return {"code": 0, "data": {"enabled": False, "wishes": [], "gifts": []}}
-        try:
-            return {"code": 0, "data": self.gift.panel_data()}
-        except Exception as exc:
-            logger.debug("[amo] 礼物面板数据失败: %s" % exc)
-            return {"code": 0, "data": {"enabled": False, "wishes": [], "gifts": []}}
-
     def _photo_job_start(self, kind, coro):
         """后台跑生图任务，接口立刻返回 job id，避免桥接请求超时。"""
         jobs = getattr(self, "_photo_jobs", None)
@@ -15265,6 +15223,20 @@ class HumanCorePlugin(Star):
                     "anxiety": snap.get("anxiety", 0),
                     "owed": snap.get("owed_to_user", 0),
                     "month_spent": snap.get("month_spent", 0),
+                }
+                inv = snap.get("invest") or {}
+                self.state.invest = {
+                    "cash": inv.get("cash", 0),
+                    "value": inv.get("total_value", 0),
+                    "pnl": inv.get("total_pnl", 0),
+                    "pnl_pct": inv.get("total_pnl_pct", 0),
+                    "day_pnl": inv.get("day_pnl", 0),
+                    "count": inv.get("count", 0),
+                    "positions": [
+                        {"name": p.get("name") or p.get("symbol"),
+                         "qty": p.get("qty"), "pnl_pct": p.get("pnl_pct")}
+                        for p in (inv.get("positions") or [])[:6]
+                    ],
                 }
         except Exception as exc:
             logger.debug("[amo] 财务快照同步失败: %s" % exc)
@@ -15539,6 +15511,29 @@ class HumanCorePlugin(Star):
         if isinstance(result, dict) and result.get("skipped"):
             return
         logger.info("[amo] 从人格读到月薪 %.0f，已交给金融" % gross)
+
+    async def _note_invest_seed(self) -> None:
+        """第一次建仓后，把这件事记成记忆——她要真的"知道"自己买了股票。"""
+        try:
+            if self.db.kv_get("invest_seed_noted", False):
+                return
+        except Exception:
+            return
+        inv = getattr(self.state, "invest", None) or {}
+        positions = inv.get("positions") or []
+        if not positions:
+            return
+        first = positions[0]
+        try:
+            self.db.kv_set("invest_seed_noted", True)
+        except Exception:
+            pass
+        await self._market_memory(
+            "我用自己的钱买了 %s %d 股，先放着看看；跌了会心疼，涨了想奖励自己"
+            % (first.get("name") or "一只股票", int(first.get("qty") or 0)),
+            kind="asset",
+        )
+        logger.info("[amo] 已记住建仓：%s %s 股" % (first.get("name"), first.get("qty")))
 
     async def _sync_market_mood(self) -> None:
         """股市盈亏影响心情。

@@ -97,3 +97,26 @@ class MarketMoodTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InvestAwarenessTests(unittest.TestCase):
+    def _plugin(self, finance=None, invest=None):
+        obj = object.__new__(M.HumanCorePlugin)
+        obj.state = type("S", (), {"finance": finance or {}, "invest": invest or {}})()
+        return obj
+
+    def test_money_line(self):
+        text = self._plugin(finance={"balance": 1234.0})._money_line()
+        self.assertIn("¥1234", text)
+
+    def test_invest_line_lists_positions(self):
+        inv = {"positions": [{"name": "平安银行", "qty": 100, "pnl_pct": -0.4}],
+               "day_pnl": -10.6}
+        text = self._plugin(invest=inv)._invest_line()
+        self.assertIn("平安银行", text)
+        self.assertIn("100股", text)
+        self.assertIn("亏了", text)
+
+    def test_invest_line_without_positions(self):
+        text = self._plugin()._invest_line()
+        self.assertIn("还没有持仓", text)

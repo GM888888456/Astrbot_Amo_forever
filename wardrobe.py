@@ -3,7 +3,7 @@
 
 日程配装不再随机，而是从这份库里按场景挑；库是空的才回落到内置兜底。
 
-数据存在插件数据目录的 ``wardrobe.json``（和 ``gifts.json`` 同级），
+数据存在插件数据目录的 ``wardrobe.json``，
 每条：id / name / scenes / gender / enabled / note / created。
 """
 
