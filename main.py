@@ -517,7 +517,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "7.6.9"
+PLUGIN_VERSION = "7.7.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -11142,6 +11142,10 @@ class HumanCorePlugin(Star):
         except Exception as exc:
             logger.debug("[amo] 薪资同步失败: %s" % exc)
         try:
+            await self._sync_market_mood()
+        except Exception as exc:
+            logger.debug("[amo] 股市心情同步失败: %s" % exc)
+        try:
             await self._maybe_treat()
         except Exception as exc:
             logger.debug("[amo] 就医判断失败: %s" % exc)
@@ -15535,6 +15539,77 @@ class HumanCorePlugin(Star):
         if isinstance(result, dict) and result.get("skipped"):
             return
         logger.info("[amo] 从人格读到月薪 %.0f，已交给金融" % gross)
+
+    async def _sync_market_mood(self) -> None:
+        """股市盈亏影响心情。
+
+        赚了：开心、兴奋，奖励自己一顿好的（真的记一笔支出）。
+        亏了：郁闷、焦虑，吃得简单——语气会跟着无精打采（心情会注入人格提示）。
+        一天只按方向记一次，不然每条 tick 都在加焦虑。
+        """
+        plugin = self._finance()
+        reader = getattr(plugin, "mood_signal", None) if plugin is not None else None
+        if not callable(reader):
+            return
+        try:
+            signal = reader()
+        except Exception as exc:
+            logger.debug("[amo] 读投资盈亏失败: %s" % exc)
+            return
+        if not isinstance(signal, dict):
+            return
+        pct = to_float(signal.get("day_pnl_pct"), 0)
+        pnl = to_float(signal.get("day_pnl"), 0)
+        if abs(pct) < 2.0:
+            return
+        mood = "up" if pct > 0 else "down"
+        key = "%s|%s" % (today_str(), mood)
+        if getattr(self, "_market_mood_key", "") == key:
+            return
+        self._market_mood_key = key
+        if mood == "up":
+            self.state.nudge(开心=8, 兴奋=4)
+            await self._market_memory(
+                "今天股市赚了 %.2f%%（¥%.0f），心情不错，想吃点好的" % (pct, pnl),
+                kind="event",
+            )
+            await self._market_reward(pnl)
+        else:
+            self.state.nudge(郁闷=8, 焦虑=6, 开心=-4)
+            await self._market_memory(
+                "今天股市亏了 %.2f%%（¥%.0f），有点没精神，吃得简单点" % (-pct, -pnl),
+                kind="event",
+            )
+
+    async def _market_memory(self, text: str, kind: str = "event") -> None:
+        try:
+            uid = self._primary_uid()
+        except Exception:
+            uid = ""
+        if not uid:
+            return
+        try:
+            await self._write_memory_checked(uid, text, kind=kind, tier=0,
+                                             scope="private", group_id="")
+        except Exception as exc:
+            logger.debug("[amo] 股市心情没写进记忆: %s" % exc)
+
+    async def _market_reward(self, pnl: float) -> None:
+        """赚了就奖励自己吃顿好的——真花钱，走同一个账本。"""
+        if not self.cfg_bool("market_reward_enable", True):
+            return
+        amount = 68.0 if pnl < 500 else (128.0 if pnl < 3000 else 198.0)
+        try:
+            result = await self.charge(
+                amount, reason="犒劳自己吃顿好的", payee="餐厅",
+                request_id="market-reward-%s" % today_str(),
+                source="market", detail="今天股票赚了",
+            )
+        except Exception as exc:
+            logger.debug("[amo] 奖励自己失败: %s" % exc)
+            return
+        if result.get("ok"):
+            logger.info("[amo] 股市赚了，奖励自己一顿 %.0f 元" % amount)
 
     def _sync_health_from_medical(self) -> None:
         """身体状态以医疗插件为准。
