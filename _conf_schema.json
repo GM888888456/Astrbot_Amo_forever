@@ -356,6 +356,12 @@
     "description": "同一用户最短主动私聊间隔（分钟）",
     "default": 90
   },
+  "proactive_pending_max_minutes": {
+    "type": "int",
+    "description": "主动消息的等待窗口（分钟）",
+    "default": 120,
+    "hint": "她主动发一条后，你多久没回（也没在任何地方说话）就不再另发。原来写死 6 小时，容易一整天只剩早上那一句。"
+  },
   "proactive_daily_max": {
     "type": "int",
     "description": "每人每日主动私聊上限",

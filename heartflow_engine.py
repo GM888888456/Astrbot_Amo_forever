@@ -1693,6 +1693,35 @@ class HeartflowEngine:
         if text:
             self._record_bot_reply_manual(event.unified_msg_origin, text)
 
+    def mark_replied(self, umo: str, text: str = "") -> None:
+        """手工发送（分段引擎自己发）时由调用方通知：这一轮真的回了。
+
+        管道里的 on_after_message_sent 只在框架自己发送时才触发；分段回复是事件
+        send 出去的，钩子不一定会走，于是「判断暂停」一直挂着 60 秒——她刚插完一句话
+        就哑一分钟，看起来就是「不怎么主动说话了」。
+        """
+        try:
+            state = self._get_chat_state(umo)
+        except Exception:
+            return
+        try:
+            if text:
+                self._record_bot_reply_manual(umo, text)
+        except Exception:
+            pass
+        try:
+            state.pending_heartflow_reply = False
+            state.pending_heartflow_mode = ""
+            state.last_reply_time = time.time()
+            state.total_replies += 1
+            if self._is_immersive_mode_active(umo):
+                self._refresh_immersive_mode(umo)
+            else:
+                self._activate_immersive_mode(umo)
+            self._set_judgment_paused(umo, paused=False)
+        except Exception:
+            pass
+
     async def on_after_message_sent(self, event: AstrMessageEvent):
         """消息发送后的状态更新"""
         if not self.config.get("enable_heartflow"):

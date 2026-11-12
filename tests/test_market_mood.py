@@ -160,3 +160,39 @@ class LeekTests(unittest.TestCase):
 
     def test_normal_day_has_no_leek_lines(self):
         self.assertEqual(self._plugin("")._leek_lines(), [])
+
+
+class PendingBlockTests(unittest.TestCase):
+    """主动消息的等待窗口：不能因为「他没私聊回」就半天不开口。"""
+
+    def _plugin(self, pending, last_seen, minutes=120):
+        obj = object.__new__(M.HumanCorePlugin)
+        obj.config = {"proactive_pending_max_minutes": minutes}
+        obj._pending_key = lambda uid: "p:" + uid
+        obj.db = type("DB", (), {
+            "kv_get": lambda self, k, d=None: pending if k.startswith("p:") else d,
+            "kv_set": lambda self, k, v: None,
+        })()
+        return obj
+
+    def test_recent_message_blocks(self):
+        import time
+        now = time.time()
+        obj = self._plugin({"sent_at": now - 600}, last_seen=now - 4000)
+        self.assertTrue(obj._pending_still_blocking("u1", {"last_seen": now - 4000}, now))
+
+    def test_user_spoke_anywhere_unblocks(self):
+        import time
+        now = time.time()
+        obj = self._plugin({"sent_at": now - 600}, last_seen=now - 60)
+        self.assertFalse(obj._pending_still_blocking("u1", {"last_seen": now - 60}, now))
+
+    def test_window_expires(self):
+        import time
+        now = time.time()
+        obj = self._plugin({"sent_at": now - 121 * 60}, last_seen=0)
+        self.assertFalse(obj._pending_still_blocking("u1", {"last_seen": 0}, now))
+
+    def test_no_pending_never_blocks(self):
+        obj = self._plugin({}, last_seen=0)
+        self.assertFalse(obj._pending_still_blocking("u1", {}, 1000.0))

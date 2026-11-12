@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.0.0"
+PLUGIN_VERSION = "8.0.1"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -2650,6 +2650,19 @@ class AmoDB:
 # ---------------------------------------------------------------------------
 # 状态：九维心情 / 生理期 / 健康 / 天气 / 世界观 / 日程
 # ---------------------------------------------------------------------------
+
+def proactive_pending_block_seconds(cfg_int) -> float:
+    """发过主动消息后，多久之内不再发下一条。
+
+    原来是写死 6 小时：他只要没在私聊回一句，她半天都不能再开口；
+    实际上他在群里聊得火热也算「人在」，这条要跟着放宽。
+    """
+    try:
+        minutes = max(0, int(cfg_int("proactive_pending_max_minutes", 120)))
+    except Exception:
+        minutes = 120
+    return minutes * 60
+
 
 class HumanState:
     def __init__(self, plugin):
@@ -11921,6 +11934,24 @@ class HumanCorePlugin(Star):
             pass
         return text
 
+    def _pending_still_blocking(self, uid, profile, now) -> bool:
+        pending = self.db.kv_get(self._pending_key(uid), None)
+        if not isinstance(pending, dict) or not pending.get("sent_at"):
+            return False
+        sent_at = to_float(pending.get("sent_at"), 0)
+        if not sent_at:
+            return False
+        # 他在这之后说过话（不管在哪个平台），就当她「已经看见她」了，不用再等
+        try:
+            if to_float(profile.get("last_seen"), 0) > sent_at + 60:
+                self.db.kv_set(self._pending_key(uid), {})
+                return False
+        except Exception:
+            pass
+        if now - sent_at >= proactive_pending_block_seconds(self.cfg_int):
+            return False
+        return True
+
     async def _check_proactive_pending(self):
         try:
             profiles = self.db.proactive_profiles(limit=100)
@@ -11940,7 +11971,7 @@ class HumanCorePlugin(Star):
             if not umo:
                 continue
             age = now - to_float(pending.get("sent_at"), 0)
-            if age > 6 * 3600:
+            if age > proactive_pending_block_seconds(self.cfg_int):
                 self.db.kv_set(self._pending_key(uid), {})
                 continue
             followup_minutes = self.cfg_int("proactive_followup_minutes", 30)
@@ -12558,11 +12589,8 @@ class HumanCorePlugin(Star):
             )
             if quiet and not guaranteed:
                 continue
-            pending = self.db.kv_get(self._pending_key(profile.get("uid")), None)
-            if isinstance(pending, dict) and pending.get("sent_at"):
-                if now - to_float(pending.get("sent_at"), 0) < 6 * 3600:
-                    continue
-                self.db.kv_set(self._pending_key(profile.get("uid")), {})
+            if self._pending_still_blocking(profile.get("uid"), profile, now):
+                continue
             snap = self.state.snapshot()
             category = (snap.get("activity") or {}).get("category", "")
             if category in ("sleep", "work", "study") and not guaranteed:
