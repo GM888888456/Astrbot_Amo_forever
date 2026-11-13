@@ -1527,8 +1527,16 @@
   },
   "draw_private_only": {
     "type": "bool",
-    "description": "【照片】只在私聊画",
-    "default": true
+    "description": "【照片】只在私聊画（已废弃，群聊策略见 draw_group_mode）",
+    "default": true,
+    "hint": "老开关，保留只为兼容旧配置；群聊能不能画现在只看 draw_group_mode。"
+  },
+  "draw_group_mode": {
+    "type": "string",
+    "description": "【照片】群聊放行策略",
+    "default": "at",
+    "options": ["at", "any", "off"],
+    "hint": "at（默认）：群里必须真的 @ 她才画；any：群里任何人都能触发（慎用）；off：群聊一律不画。判定在终端本地完成，不叫模型。"
   },
   "draw_dry_run": {
     "type": "bool",

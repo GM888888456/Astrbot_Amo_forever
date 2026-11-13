@@ -469,12 +469,43 @@ class DrawEngine:
             logger.info("[amo] 画图跳过：%s" % reason)
         return None
 
+    def _is_at_me(self, event):
+        """群里是不是真 @ 了她：只认消息里的 At 组件，唤醒词不算。"""
+        try:
+            self_id = str(event.get_self_id() or "")
+            message = getattr(getattr(event, "message_obj", None), "message", None) or []
+            for comp in message:
+                if type(comp).__name__ == "At" and self_id and str(getattr(comp, "qq", "")) == self_id:
+                    return True
+        except Exception as _amo_exc:
+            _note_swallowed("draw_engine.DrawEngine._is_at_me", _amo_exc)
+        return False
+
+    def _group_mode(self):
+        """群聊放行策略：off 不画 / at 必须真 @（默认）/ any 都可以。"""
+        raw = self._cfg_str("draw_group_mode", "at").strip().lower()
+        return raw if raw in ("off", "at", "any") else "at"
+
+    def _allowed_here(self, event):
+        """私聊照旧；群聊按 draw_group_mode 判，判定全在本地，不叫模型。"""
+        try:
+            if event.is_private_chat():
+                return True
+        except Exception:
+            return False
+        mode = self._group_mode()
+        if mode == "off":
+            return False
+        if mode == "any":
+            return True
+        return self._is_at_me(event)
+
     def wants_photo(self, event):
         """他这轮是不是明确在要照片（给主脑提示用：别一口拒绝）。"""
         if not self.enabled:
             return False
         try:
-            if self._cfg_bool("draw_private_only", True) and not event.is_private_chat():
+            if not self._allowed_here(event):
                 return False
             if not self.is_owner(event):
                 return False
@@ -490,8 +521,8 @@ class DrawEngine:
         """返回 dict(prompt, mode, reason) 或 None。"""
         if not self.enabled:
             return self._skip("draw_enable=false")
-        if self._cfg_bool("draw_private_only", True) and not event.is_private_chat():
-            return self._skip("不是私聊")
+        if not self._allowed_here(event):
+            return self._skip("群聊没 @ 或画图没放行")
         if not self.is_owner(event):
             return self._skip("不是主人/相恋关系")
         text = str(getattr(event, "message_str", "") or "").strip()
@@ -646,8 +677,8 @@ class DrawEngine:
             self._inflight.add(umo)
         self._last_prompt[uid] = (prompt, time.monotonic())
         self._stats["scheduled"] += 1
-        if self.debug:
-            logger.info("[amo] 画图排队（%s%s）：%s" % (reason, "/缓存" if cached else "", prompt))
+        logger.info("[审批] 画图放行（%s%s）：%s"
+                    % (reason, "/缓存" if cached else "", prompt[:60]))
         if self._spawn(self._run(event, prompt, uid, umo, cached, cache_key, selfie)) is None:
             if umo:
                 self._inflight.discard(umo)

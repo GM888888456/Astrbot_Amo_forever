@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.5.8"
+PLUGIN_VERSION = "8.6.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -5795,6 +5795,55 @@ class HumanCorePlugin(Star):
         except Exception:
             return {}
 
+    #: 整句就是换装指令才算；聊天里提到换衣服不算（和生图插件独立模式同一张词表）
+    OUTFIT_COMMANDS = ("换一套衣服", "换套衣服", "换身衣服", "换衣服", "换一件衣服")
+    _OUTFIT_TRIM = "。！!～~,.，？?\n\t "
+
+    def _outfit_command(self, text):
+        """认出「换一套衣服」这类整句指令；唤醒词先剥掉。判定纯本地。"""
+        body = str(text or "").strip().strip(self._OUTFIT_TRIM)
+        if not body:
+            return ""
+        for prefix in self._command_prefixes():
+            if body.startswith(prefix):
+                body = body[len(prefix):].strip().strip(self._OUTFIT_TRIM)
+                break
+        for word in self.OUTFIT_COMMANDS:
+            if body == word:
+                return word
+        return ""
+
+    async def _maybe_change_outfit(self, event, text):
+        """中央集权：换装由 Amo 判、Amo 说，造型由生图插件执行。
+
+        判定和回执都在本地：整句匹配 → 让挂载插件换一套 → 直接回「换好了」，
+        不叫模型、不占聊天主流程；挂载不在时老实不放行。
+        """
+        word = self._outfit_command(text)
+        if not word:
+            return False
+        plugin = self._image_plugin()
+        changer = getattr(plugin, "change_outfit_for", None) if plugin is not None else None
+        if not callable(changer):
+            return False
+        try:
+            look = str(changer("Amo 换装指令") or "").strip()
+        except Exception as exc:
+            logger.warning("[amo] 换装失败: %s" % exc)
+            return False
+        if not look:
+            return False
+        logger.info("[审批] 换装放行（%s）：%s" % (word, look))
+        try:
+            await self.context.send_message(event.unified_msg_origin, "换好了：%s" % look)
+        except Exception as exc:
+            logger.debug("[amo] 换装回执发送失败: %s" % exc)
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+        return True
+
     def _command_prefixes(self):
         if self._prefix_cache is not None:
             return self._prefix_cache
@@ -9482,6 +9531,11 @@ class HumanCorePlugin(Star):
                     await self._maybe_user_takes_her_to_doctor(event, raw_text)
             except Exception as exc:
                 logger.debug("[amo] 就医处理失败: %s" % exc)
+            try:
+                if raw_text and await self._maybe_change_outfit(event, raw_text):
+                    return
+            except Exception as exc:
+                logger.debug("[amo] 换装指令处理失败: %s" % exc)
             await self._handle_message(event)
         except Exception:
             logger.exception("[amo] 消息处理异常")
