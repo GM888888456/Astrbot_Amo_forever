@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.8.0"
+PLUGIN_VERSION = "8.8.1"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -12315,6 +12315,10 @@ class HumanCorePlugin(Star):
         except Exception as exc:
             logger.debug("[amo] 薪资同步失败: %s" % exc)
         try:
+            await self._maybe_push_assets()
+        except Exception as exc:
+            logger.debug("[amo] 房车同步失败: %s" % exc)
+        try:
             await self._note_invest_seed()
         except Exception as exc:
             logger.debug("[amo] 建仓记忆失败: %s" % exc)
@@ -16829,6 +16833,35 @@ class HumanCorePlugin(Star):
         if isinstance(result, dict) and result.get("skipped"):
             return
         logger.info("[amo] 从人格读到月薪 %.0f，已交给金融" % gross)
+
+    async def _maybe_push_assets(self) -> None:
+        """把人格里的房/车同步给金融：她开奔驰，就不能被随机成比亚迪。"""
+        now = now_ts()
+        if now - to_float(getattr(self, "_assets_checked_at", 0), 0) < 600:
+            return
+        self._assets_checked_at = now
+        plugin = self._finance()
+        setter = getattr(plugin, "set_persona_assets", None) if plugin is not None else None
+        if not callable(setter):
+            return
+        car = ""
+        house = ""
+        try:
+            profile = getattr(self.state, "schedule_profile", {}) or {}
+            car = str(profile.get("car") or "").strip()
+            house = str(profile.get("home") or "").strip()
+        except Exception as exc:
+            logger.debug("[amo] 读人格资产失败: %s" % exc)
+            return
+        if not car and not house:
+            return
+        try:
+            result = await asyncio.to_thread(setter, car, house)
+        except Exception as exc:
+            logger.debug("[amo] 推送房车失败: %s" % exc)
+            return
+        if isinstance(result, dict) and result.get("changed"):
+            logger.info("[amo] 从人格读到房车，已交给金融：%s｜%s" % (house or "-", car or "-"))
 
     async def _note_invest_seed(self) -> None:
         """第一次建仓后，把这件事记成记忆——她要真的"知道"自己买了股票。"""
