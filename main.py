@@ -511,7 +511,28 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.5.6"
+PLUGIN_VERSION = "8.5.7"
+
+
+_VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
+_VOICE_TAG_RE = re.compile(r"</?(?:astrbot_speak|amo_speak)\b[^>]*>", re.I)
+
+
+def _strip_voice_tags(text: str) -> str:
+    """模型偶尔不调 amo_speak 工具，直接输出 <astrbot_speak text="..."> 这种伪标签。
+    这里只取要念的那句话，别把标签念出来，也别让整条回复消失。"""
+    body = str(text or "")
+    m = _VOICE_TAG_OPEN_RE.search(body)
+    if m:
+        attr = m.group(1) or ""
+        am = re.search(r'text\s*=\s*"([^"]*)"', attr) or re.search(r"text\s*=\s*'([^']*)'", attr)
+        if am and am.group(1).strip():
+            return am.group(1).strip()
+        tail = body[m.end():]
+        close = re.search(r"</(?:astrbot_speak|amo_speak)>", tail, re.I)
+        if close:
+            return tail[: close.start()].strip()
+    return _VOICE_TAG_RE.sub("", body).strip()
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -11512,10 +11533,20 @@ class HumanCorePlugin(Star):
             if not text.strip():
                 return
             if getattr(event, "amo_voice_reply_only", False):
-                # 他明确要的是语音，语音插件会把它念出来；这段文字就别再发了
-                logger.info("[amo] 本轮只发语音，文字不发：%s" % text[:40])
-                result.chain = []
-                return
+                # 他明确要的是语音，语音插件会把它念出来；这段文字就别再发了。
+                # 但要把「要念的纯文本」留给语音插件兜底：模型有时不调 amo_speak，
+                # 只输出 <astrbot_speak ...> 伪标签，清空 chain 会让整条回复消失。
+                spoken_text = _strip_voice_tags(text)
+                if not spoken_text:
+                    logger.warning("[amo] 只发语音但没拿到可念的文字，按普通回复发出")
+                else:
+                    try:
+                        event.amo_voice_text = spoken_text
+                    except Exception:
+                        pass
+                    logger.info("[amo] 本轮只发语音，文字不发：%s" % spoken_text[:40])
+                    result.chain = []
+                    return
             group = not event.is_private_chat()
             if not group:
                 # 私聊永远不引用（QQ / 飞书 / 任何平台）：连上游核心或别的插件
