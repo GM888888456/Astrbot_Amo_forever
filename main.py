@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.6.0"
+PLUGIN_VERSION = "8.6.2"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -3493,6 +3493,111 @@ class HumanState:
             raw = []
         return normalize_day_types(raw or None)
 
+    def _active_trip(self, day=None):
+        """今天在不在外面：自己旅游（wander_trip）或跟他出门（travel）。
+
+        返回 {"city","kind","trip","return_day","return_hour"} 或 None。
+        没有这个判定，日程一被重新生成就变「宅家日」——人还在南阳，日程写着家。
+        """
+        day = str(day or today_str())
+        for key, kind in (("wander_trip", "solo"), ("travel", "follow")):
+            try:
+                trip = self.db.kv_get(key, {}) or {}
+            except Exception:
+                continue
+            if not isinstance(trip, dict):
+                continue
+            city = str(trip.get("city") or "").strip()
+            if not city:
+                continue
+            start = str(trip.get("day") or trip.get("start_day") or "")
+            ret = str(trip.get("return_day") or start)
+            if not start or not (start <= day <= ret):
+                continue
+            if str(trip.get("phase") or "") in ("cancelled", "done"):
+                continue
+            try:
+                back = int(trip.get("return_hour") or 22)
+            except (TypeError, ValueError):
+                back = 22
+            return {"city": city, "kind": kind, "trip": trip,
+                    "return_day": ret, "return_hour": back}
+        return None
+
+    def _sync_trip_schedule(self, items, day=None):
+        """日程必须和她在哪一致：今天在外面，就把还没过的时段换成外面的行程。
+
+        出行覆盖层要**每条 ensure_schedule 分支**都过一遍：只放在生成后面，
+        重启/重建日程走「已有日程」那条早退分支时就会被漏掉，于是人在旅游、日程在家。
+        """
+        day = str(day or today_str())
+        trip = self._active_trip(day)
+        if not trip:
+            return items
+        try:
+            if not self.p.cfg_bool("city_travel_schedule", True):
+                return items
+        except Exception:
+            pass
+        city = str(trip.get("city") or "")
+        if not city:
+            return items
+        if day == trip.get("return_day"):
+            try:
+                if _now().hour >= int(trip.get("return_hour") or 22):
+                    return items
+            except Exception:
+                pass
+            try:
+                self.apply_return_overlay(city, int(trip.get("return_hour") or 22))
+            except Exception as exc:
+                logger.warning("[amo] 回程日程同步失败（%s）: %s" % (city, exc))
+                return items
+        else:
+            try:
+                self.apply_travel_overlay(city)
+            except Exception as exc:
+                logger.warning("[amo] 出行日程同步失败（%s）: %s" % (city, exc))
+                return items
+        merged = self.schedule.get(day) or []
+        if not self._schedule_has_city(merged, city):
+            # 覆盖层没落到日程上（老版本、异常、或刚被别处重建）：按出行事件直接重建今天，
+            # 宁可多写一次，也不能让她「人在南阳、日程在家」。
+            try:
+                spots = _city_pick_spots(self.p.scenic_spots(), city, day)
+            except Exception:
+                spots = []
+            from_hour = 0 if not merged else _now().hour
+            until = None
+            if day == trip.get("return_day"):
+                until = max(from_hour, int(trip.get("return_hour") or 22))
+            kwargs = {"spots": spots}
+            if until is not None:
+                kwargs["until_hour"] = until
+            merged = _city_travel_events(city, from_hour, **kwargs) or merged
+        if merged:
+            merged = self._hourly_schedule(merged)
+            self.schedule[day] = merged
+            self.db.kv_set("schedule", self.schedule)
+            self.db.save_schedule(day, merged)
+            logger.info("[amo] 出行日程对齐：今天在 %s（%s 回）" % (
+                city, "%02d:00" % int(trip.get("return_hour") or 22)))
+            return merged
+        return items
+
+    @staticmethod
+    def _schedule_has_city(items, city):
+        """今天的日程里有没有出行城市（没有就说明覆盖层没生效）。"""
+        name = str(city or "").strip()
+        if not name:
+            return True
+        for item in (items or []):
+            if not isinstance(item, dict):
+                continue
+            if name in str(item.get("place") or ""):
+                return True
+        return False
+
     def _today_day_type(self, day: str) -> dict:
         """今天是什么日子：上班日 / 休息日 / 外出日 / 宅家日 / 加班日 / 摸鱼日。"""
         if pick_day_type is None:
@@ -3503,6 +3608,16 @@ class HumanState:
             d = _dt.date.fromisoformat(str(day))
             is_weekend = d.weekday() >= 5
             picked = pick_day_type(self._day_types(), is_weekend, str(day))
+            trip = self._active_trip(str(day))
+            if trip and str(trip.get("city") or "") != _CITY_DEFAULT:
+                # 人在外面旅游，日子类型就不能是「宅家日」，否则骨架一整天空在家
+                outing = next(
+                    (item for item in self._day_types() if str(item.get("id") or "") == "outing"),
+                    {"id": "outing", "name": "外出日", "guide": ""},
+                )
+                picked = dict(outing)
+                logger.info("[amo] 今天在外面（%s），日子类型改为：%s" % (
+                    trip.get("city"), picked.get("name")))
             self.db.kv_set("day_type_" + str(day), picked)
             logger.debug("[amo] 今天的日子类型: %s" % picked.get("name"))
             return picked
@@ -3565,6 +3680,7 @@ class HumanState:
                 self.schedule[today] = hourly
                 self.db.kv_set("schedule", self.schedule)
                 self.db.save_schedule(today, hourly)
+            hourly = self._sync_trip_schedule(hourly, today)
             self.warm_schedule_diaries(today, hourly, umo)
             return hourly
         world = await self.ensure_worldview(umo)
@@ -3655,6 +3771,7 @@ class HumanState:
                 self.db.kv_set("diary_warm_%s_%s" % (DIARY_WARM_VERSION, today), False)
             except Exception:
                 pass
+        items = self._sync_trip_schedule(items, today)
         self.warm_schedule_diaries(today, items, umo)
         cutoff = (_now().date() - timedelta(days=14)).isoformat()
         for day in list(self.schedule.keys()):
@@ -4247,12 +4364,36 @@ class HumanState:
                     break
         self.db.kv_set(key, True)
 
+    def _state_on_trip(self):
+        """今天在不在外面（出行覆盖层还没落地时，别把真实行程当幻觉删掉）。"""
+        try:
+            return bool(self._active_trip())
+        except Exception:
+            return False
+
     def current_activity(self):
         items = self.schedule.get(today_str()) or []
         current = minutes_now()
         for item in items:
             if in_minute_range(current, parse_hhmm(item.get("start")), parse_hhmm(item.get("end"))):
                 return dict(item)
+        # 日程还没生成 / 刚被重建 / 出行覆盖层没落地时，绝不能退回硬编码的「家」：
+        # 她人在南阳逛景区，状态写「家」比没有状态更糟（问一句就自相矛盾）。
+        try:
+            trip = self._active_trip()
+        except Exception:
+            trip = None
+        if trip:
+            city = str(trip.get("city") or "").strip()
+            back_day = str(trip.get("return_day") or "").strip()
+            try:
+                back_hour = int(trip.get("return_hour") or 22)
+            except (TypeError, ValueError):
+                back_hour = 22
+            still_out = not (back_day and back_day == today_str() and _now().hour >= back_hour)
+            if city and still_out:
+                return {"start": "", "end": "", "activity": "在外面待着",
+                        "place": "%s·酒店房间" % city, "category": "rest", "zone": "hotel"}
         hour = _now().hour
         if hour < 6:
             return {"start": "00:00", "end": "06:00", "activity": "睡觉", "place": "家", "category": "sleep"}
@@ -10082,6 +10223,7 @@ class HumanCorePlugin(Star):
             if (
                 role != "user"
                 and current_place in ("家", "公司", "工位")
+                and not self._state_on_trip()
                 and re.search(r"(酒店|咖啡店|咖啡|开着车|在开车|逛完|旅游|景区)", content)
             ):
                 continue

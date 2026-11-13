@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import re
 
-import amo_city_index
+try:  # 包内加载（AstrBot 正常路径）：必须走包内相对导入
+    from . import amo_city_index
+except ImportError:  # 直接按文件加载时（单测/脚本）
+    import amo_city_index
 
 # 句尾语气词：「我到清远了」「我回东莞啦」
 _TAIL = "了啦咯呀啊呢吧嘛哦噢"
