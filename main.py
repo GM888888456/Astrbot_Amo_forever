@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.5"
+PLUGIN_VERSION = "9.0.6"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -672,6 +672,34 @@ except ImportError:  # pragma: no cover
     except ImportError:
         HeartflowCore = None
         FeelEvent = None
+
+try:
+    from .private_shots import (
+        GRANT_LINES,
+        SCOLD_LINES,
+        SHY_LINES,
+        Verdict as ShotVerdict,
+        build_prompt as build_shot_prompt,
+        decide as decide_shot,
+        detect_outfit as shot_outfit,
+        detect_pose as shot_pose,
+        wants_private_shot,
+    )
+except ImportError:  # pragma: no cover
+    try:
+        from private_shots import (
+            GRANT_LINES,
+            SCOLD_LINES,
+            SHY_LINES,
+            Verdict as ShotVerdict,
+            build_prompt as build_shot_prompt,
+            decide as decide_shot,
+            detect_outfit as shot_outfit,
+            detect_pose as shot_pose,
+            wants_private_shot,
+        )
+    except ImportError:
+        wants_private_shot = None
 
 try:
     from .memory_guard import commit as _mem_commit, prepare as _mem_prepare
@@ -10138,6 +10166,8 @@ class HumanCorePlugin(Star):
                         event.stop_event()
                         return
                     await self._wake_from_sleep(event, raw_text)
+                if raw_text and await self._maybe_private_shot(event, raw_text):
+                    return
                 if raw_text and not raw_text.startswith(("/", "／")):
                     if await self._maybe_user_move(event, raw_text):
                         return
@@ -10453,6 +10483,141 @@ class HumanCorePlugin(Star):
                 pass
             logger.info("[amo] 半夜醒来：%s" % text)
             self.sleep.back_to_sleep(now)
+
+    async def _maybe_private_shot(self, event, text) -> bool:
+        """私密照片：只私聊、只主人；第一次害羞拒绝，再问按心情判定。
+
+        判定全在本地（心情来自 heartflow 的数值），出图交给生图插件；
+        提示词永远带「成年/不露点/不拍性行为」的边界。
+        """
+        if wants_private_shot is None or not text:
+            return False
+        if not event.is_private_chat() or not self._is_owner(event):
+            return False
+        try:
+            if not wants_private_shot(text):
+                return False
+        except Exception:
+            return False
+
+        today = today_str()
+        try:
+            state = self.db.kv_get("glamour", {}) or {}
+        except Exception:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        if str(state.get("day") or "") != today:
+            state = {"day": today, "state": "none", "count": 0}
+        count = int(state.get("count") or 0)
+        cap = 2
+        try:
+            cap = max(1, self.cfg_int("private_shot_daily_cap", 2))
+        except Exception:
+            pass
+
+        mood = {}
+        try:
+            mood = (self.feelings.values() if getattr(self, "feelings", None) else {}) or {}
+        except Exception:
+            mood = {}
+        negative = sum(float(mood.get(k) or 0) for k in ("anger", "sadness", "fear", "disgust"))
+        positive = sum(float(mood.get(k) or 0) for k in ("joy", "love", "surprise"))
+        verdict = decide_shot(state.get("state"), negative, positive, count, cap)
+        uid = self._primary_uid()
+
+        def save():
+            try:
+                self.db.kv_set("glamour", state)
+            except Exception:
+                pass
+
+        if verdict is ShotVerdict.SCOLD:
+            state["state"] = "scolded"
+            save()
+            line = random.choice(SCOLD_LINES)
+            if uid:
+                try:
+                    await self._write_memory_checked(
+                        uid, "他要我穿%s拍照，我心情差，直接怼回去了" % shot_outfit(text),
+                        kind="event", tier=0)
+                except Exception:
+                    pass
+            await self.context.send_message(event.unified_msg_origin, line)
+            try:
+                event.stop_event()
+            except Exception:
+                pass
+            return True
+
+        if verdict is ShotVerdict.BUSY:
+            await self.context.send_message(event.unified_msg_origin, "今天不行了，改天吧。")
+            try:
+                event.stop_event()
+            except Exception:
+                pass
+            return True
+
+        if verdict is ShotVerdict.SHY:
+            state["state"] = "shy_refused"
+            save()
+            line = random.choice(SHY_LINES)
+            if uid:
+                try:
+                    await self._write_memory_checked(
+                        uid, "他要我穿%s拍照，我害羞拒绝了" % shot_outfit(text),
+                        kind="event", tier=0)
+                except Exception:
+                    pass
+            await self.context.send_message(event.unified_msg_origin, line)
+            try:
+                event.stop_event()
+            except Exception:
+                pass
+            return True
+
+        # 答应：先回话，再后台出图（不阻塞聊天）
+        outfit = shot_outfit(text) or "家居服"
+        pose = shot_pose(text)
+        place = ""
+        try:
+            place = str((self._activity_snapshot(str(event.unified_msg_origin)) or {}).get("place") or "")
+        except Exception:
+            place = ""
+        prompt = build_shot_prompt(outfit, pose, place)
+        state["state"] = "granted"
+        state["count"] = count + 1
+        save()
+        try:
+            await self.context.send_message(event.unified_msg_origin, random.choice(GRANT_LINES))
+        except Exception:
+            pass
+        if uid:
+            try:
+                await self._write_memory_checked(
+                    uid, "他要我穿%s拍照，我答应了%s" % (outfit, ("，姿势：" + pose) if pose else ""),
+                    kind="event", tier=0)
+            except Exception:
+                pass
+
+        async def shoot():
+            try:
+                data = await self._image_bytes(prompt, event.unified_msg_origin,
+                                               str(event.get_sender_id() or ""), selfie=True)
+                if data:
+                    await self._send_image_to_umo(event.unified_msg_origin, data, "")
+            except Exception as exc:
+                logger.debug("[amo] 私密照片出图失败: %s" % exc)
+
+        try:
+            self._spawn(shoot())
+        except Exception:
+            pass
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+        return True
 
     async def _maybe_user_move(self, event, text) -> bool:
         """他说「回来吧 / 去超市 / 别逛了」：她自己掂量愿不愿意，愿意就**先走过去**。

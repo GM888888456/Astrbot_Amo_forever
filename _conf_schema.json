@@ -1527,5 +1527,17 @@
     "description": "【睡眠】半夜醒来的概率",
     "default": 0.25,
     "hint": "0~1。醒了会带一个原因（口渴/做梦/热醒/想他…），写进日程和日记，过一会儿再睡回去。"
+  },
+  "private_shot_enable": {
+    "type": "bool",
+    "description": "【私密】允许她要这种照片",
+    "default": true,
+    "hint": "只私聊、只主人；第一次会害羞拒绝，再问才按心情判定。内容限「穿着指定衣物摆姿势」，成年、不露点、不拍性行为。"
+  },
+  "private_shot_daily_cap": {
+    "type": "int",
+    "description": "【私密】每天最多拍几张",
+    "default": 2,
+    "hint": "达到上限当天不再答应；失败不占次数。"
   }
 }
