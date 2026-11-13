@@ -122,6 +122,33 @@ class InvestAwarenessTests(unittest.TestCase):
         self.assertIn("还没有持仓", text)
 
 
+class DebtTests(unittest.TestCase):
+    def _plugin(self, owed=0.0, repay=None):
+        obj = object.__new__(M.HumanCorePlugin)
+        obj.state = type("S", (), {})()
+        obj._finance = lambda: type("F", (), {
+            "borrow_info": lambda self: {"owed": owed},
+            "money_repay": lambda self: (repay or {}),
+        })()
+        return obj
+
+    def test_debt_line_when_owed(self):
+        text = self._plugin(owed=800.0)._debt_line()
+        self.assertIn("欠他", text)
+        self.assertIn("amo_repay", text)
+        self.assertIn("依赖", text)
+
+    def test_debt_line_clear(self):
+        self.assertEqual(self._plugin(owed=0.0)._debt_line(), "")
+
+    def test_repay_line(self):
+        text = self._plugin(repay={"amount": 500.0, "remaining": 300.0,
+                                   "seconds": 20})._repay_line()
+        self.assertIn("还了他钱", text)
+        self.assertIn("500", text)
+        self.assertIn("300", text)
+
+
 class LeekTests(unittest.TestCase):
     """韭菜特质：涨了吹牛，亏了死扛、半夜哭。"""
 

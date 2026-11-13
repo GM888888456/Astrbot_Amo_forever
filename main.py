@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.4.0"
+PLUGIN_VERSION = "8.4.1"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -10552,6 +10552,46 @@ class HumanCorePlugin(Star):
             % (cash, float(info.get("owed") or 0))
         )
 
+    def _debt_line(self) -> str:
+        """欠他钱的时候：更依赖、更黏，但别把「还钱」天天挂嘴上。"""
+        plugin = self._finance()
+        reader = getattr(plugin, "borrow_info", None) if plugin is not None else None
+        if not callable(reader):
+            return ""
+        try:
+            info = reader() or {}
+            owed = float(info.get("owed") or 0)
+        except Exception:
+            return ""
+        if owed <= 0:
+            return ""
+        return (
+            "【你欠他 ¥%.0f】这些是借款，没有利息——正因如此你更依赖他、更黏他。"
+            "手里有钱、觉得该还的时候，用 amo_repay 转给他（记成还款，不是消费）；"
+            "别天天把欠钱挂嘴上，也别装作没这回事。"
+            % owed
+        )
+
+    def _repay_line(self) -> str:
+        """刚还过钱：让他知道，但别邀功。"""
+        plugin = self._finance()
+        reader = getattr(plugin, "money_repay", None) if plugin is not None else None
+        if not callable(reader):
+            return ""
+        try:
+            note = reader() or {}
+            amount = float(note.get("amount") or 0)
+        except Exception:
+            return ""
+        if amount <= 0:
+            return ""
+        return (
+            "【你刚还了他钱】%d 秒前你给他转了 %.0f，还欠 %.0f。"
+            "可以自然地说一句「我还你钱啦」，别邀功、别报流水。"
+            % (int(note.get("seconds") or 0), amount,
+               float(note.get("remaining") or 0))
+        )
+
     def _invest_line(self) -> str:
         """她知道自己有股票、持了什么、今天赚赔——不然用户让她买，她完全不知道有这回事。"""
         inv = getattr(self.state, "invest", None) or {}
@@ -10681,6 +10721,8 @@ class HumanCorePlugin(Star):
             self._money_line(),
             *([self._gift_line()] if self._gift_line() else []),
             *([self._borrow_line()] if self._borrow_line() else []),
+            *([self._debt_line()] if self._debt_line() else []),
+            *([self._repay_line()] if self._repay_line() else []),
             self._invest_line(),
             "【地点写法】地点是你自己的事，说的时候用口语（“商场餐厅”“咖啡店”“家”），不要把“城市·地点”这种内部写法念出来。",
             "【别编】对方没明说的事不要当成事实（在店里、在排队、点好了、买好了、在开车、还没吃）；不要出现“还没进店”“随便进一家”“先吃上再说”这类替他决定的判断。",
@@ -11172,6 +11214,29 @@ class HumanCorePlugin(Star):
         if result.get("balance") is not None:
             tail.append("余额 %.0f 元" % float(result.get("balance") or 0))
         return head + ("（" + "，".join(tail) + "）" if tail else "") + "。"
+
+    @filter.llm_tool(name="amo_repay")
+    async def amo_repay(self, event, amount: float = 0) -> str:
+        """还他钱。你欠他钱、手里又有点钱的时候，主动转给他（记成还款，不是消费）。
+
+        Args:
+            amount(number): 还多少；0 或不填 = 能还多少还多少。
+        """
+        plugin = self._finance()
+        payer = getattr(plugin, "repay", None) if plugin is not None else None
+        if not callable(payer):
+            return "我现在没法转账（金融插件没连上）。"
+        try:
+            value = float(amount or 0)
+            result = payer(value if value > 0 else 10 ** 9) or {}
+        except Exception as exc:
+            logger.debug("[amo] amo_repay 失败: %s" % exc)
+            return "转账没成功，等会儿再说。"
+        if not result.get("ok"):
+            return "还不了：%s" % (result.get("reason") or "没有可还的金额")
+        self._sync_finance()
+        return "给他转了 %.0f，还欠他 %.0f。" % (
+            float(result.get("paid") or 0), float(result.get("remaining") or 0))
 
     @filter.llm_tool(name="schedule_view")
     async def schedule_view(self, event, day: str = "today") -> str:
