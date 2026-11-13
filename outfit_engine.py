@@ -21,6 +21,15 @@ import re
 import time
 import zlib
 
+try:  # 固定搭配规则在衣柜里定义
+    from .wardrobe import pair_ok
+except Exception:  # pragma: no cover - 单文件加载时的兜底
+    try:
+        from wardrobe import pair_ok
+    except Exception:
+        def pair_ok(slots):
+            return True
+
 FEMALE_POOLS = {
     "sleep": ("纯棉睡衣", "宽松家居服", "睡裙"),
     "home": ("家居卫衣配棉裤", "针织开衫配家居裤", "宽松T恤配短裤"),
@@ -305,6 +314,7 @@ class OutfitEngine:
         if scene == "casual" and chooser.random() < 0.35:
             shirt = pick_slot("jk_shirt")
             skirt = pick_slot("jk_skirt")
+            # 固定搭配：JK 衬衣只在有 JK 格裙时才穿，否则退回普通上衣+裤子
             if shirt and skirt:
                 socks = pick_slot("socks") or ""
                 shoes = pick_slot("shoes") or ""
@@ -313,6 +323,8 @@ class OutfitEngine:
         bottom = pick_slot("bottom")
         socks = pick_slot("socks") or ""
         shoes = pick_slot("shoes") or ""
+        if not pair_ok(["top", "bottom"]):
+            bottom = ""
         return "，".join(x for x in (top, bottom, socks, shoes) if x)
 
     def assign(self, items, day, persona=""):

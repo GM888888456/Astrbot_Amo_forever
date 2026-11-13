@@ -21,6 +21,34 @@ import zlib
 SCENES = ("work", "home", "casual", "out", "formal", "sport", "sleep", "beach")
 
 #: 分件槽位：上衣/裤子/裙子/JK 格裙/JK 衬衣/袜子/鞋/配饰
+
+#: 固定搭配：某些槽位只能和特定的槽位一起出现，别的都不能配
+SLOT_EXCLUSIVE = {
+    # JK 衬衣只配 JK 格裙，绝不配裤子/裙子
+    "jk_shirt": {"jk_skirt"},
+    # JK 格裙只配 JK 衬衣，不配普通上衣
+    "jk_skirt": {"jk_shirt"},
+    # 连衣裙独占，不能叠裤子/上衣（外套另说，现在没有外套槽）
+    "dress": set(),
+}
+
+
+def pair_ok(slots) -> bool:
+    """判断一套搭配在规则上成不成立（只看槽位，不看具体衣服）。"""
+    have = set(str(slot or "") for slot in (slots or []) if slot)
+    for slot in list(have):
+        need = SLOT_EXCLUSIVE.get(slot)
+        if need is None:
+            continue
+        # 有独占规则：允许的搭档之外，不许出现别的衣服槽位
+        allowed = need | {slot}
+        extra = {x for x in have if x not in allowed}
+        # 袜子/鞋是任何搭配都能穿的，不算冲突
+        extra -= {"socks", "shoes", "accessory"}
+        if extra:
+            return False
+    return True
+
 SLOTS = ("top", "bottom", "dress", "jk_skirt", "jk_shirt", "socks", "shoes", "accessory")
 SLOT_LABELS = {"top": "上衣", "bottom": "裤子", "dress": "裙子", "jk_skirt": "JK 格裙",
                "jk_shirt": "JK 衬衣", "socks": "袜子", "shoes": "鞋", "accessory": "配饰"}
