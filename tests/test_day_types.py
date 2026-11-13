@@ -81,10 +81,23 @@ class ScheduleChangeTests(unittest.TestCase):
         items = self._items()
         change = SC.detect_schedule_change("来接我")
         out = SC.apply_change(items, change, self.NOW)
-        cur = out[0]
-        self.assertEqual(cur["start"], "18:10")
-        self.assertIn("来接我", cur["activity"])
-        self.assertEqual(out[1]["activity"], "吃晚饭")
+        # 原来的活动先到此刻为止，再从这里改成「来接我」
+        self.assertEqual(out[0]["end"], "18:10")
+        self.assertEqual(out[1]["start"], "18:10")
+        self.assertIn("来接我", out[1]["activity"])
+        # 吃饭那格不动
+        self.assertTrue(any(x["activity"] == "吃晚饭" for x in out))
+
+    def test_move_has_a_walk_segment_before_arriving(self):
+        """不能上一秒在景区、下一秒到家：中间必须有一段「在路上」。"""
+        items = self._items()
+        change = {"activity": "回家", "place": "家", "category": "rest"}
+        out = SC.apply_change(items, change, self.NOW, transition_minutes=30)
+        roads = [x for x in out if x.get("place") == "路上"]
+        homes = [x for x in out if x.get("place") == "家" and x["start"] >= "18:10"]
+        self.assertTrue(roads, "中间要有路上那一段")
+        self.assertTrue(homes, "到了之后要在家")
+        self.assertLess(roads[-1]["start"], homes[0]["start"])
 
     def test_apply_does_not_mutate_input(self):
         items = self._items()
@@ -96,9 +109,12 @@ class ScheduleChangeTests(unittest.TestCase):
         items = self._items()
         change = SC.detect_schedule_change("该睡了")
         out = SC.apply_change(items, change, self.NOW)
-        self.assertEqual(out[0]["category"], "sleep")
-        self.assertEqual(out[1]["activity"], "睡觉")
-        self.assertEqual(out[1]["category"], "sleep")
+        sleeps = [x for x in out if x["category"] == "sleep"]
+        self.assertTrue(sleeps, "说睡了就该有睡觉的格子")
+        self.assertTrue(all(x["activity"] == "睡觉" for x in sleeps))
+        # 说睡之后不再有别的活动
+        first_sleep = sleeps[0]["start"]
+        self.assertTrue(all(x["category"] == "sleep" for x in out if x["start"] >= first_sleep))
 
     def test_apply_empty_items(self):
         self.assertEqual(SC.apply_change([], SC.detect_schedule_change("睡吧"), self.NOW), [])

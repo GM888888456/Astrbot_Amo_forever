@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.8.1"
+PLUGIN_VERSION = "8.9.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -9993,6 +9993,8 @@ class HumanCorePlugin(Star):
             try:
                 raw_text = (event.message_str or "").strip()
                 if raw_text and not raw_text.startswith(("/", "／")):
+                    if await self._maybe_user_move(event, raw_text):
+                        return
                     await self._apply_user_schedule_change(event.unified_msg_origin, raw_text)
             except Exception:
                 pass
@@ -10072,6 +10074,87 @@ class HumanCorePlugin(Star):
         except Exception:
             return "收了你的%s %s，我记着欠你 %.0f。" % (
                 kind, amount_text, float(owed or 0))
+
+    async def _maybe_user_move(self, event, text) -> bool:
+        """他说「回来吧 / 去超市 / 别逛了」：她自己掂量愿不愿意，愿意就**先走过去**。
+
+        - 只认私聊里的主人/恋人；
+        - 心情差（生气+暴躁+郁闷+委屈偏高）：直接不答应；
+        - 心情还行：答应，日程拆成「原来的活动 → 在路上 → 到达」，不瞬移；
+        - 答不答应都写进记忆，她记得这件事。
+        """
+        if detect_schedule_change is None or apply_sched_change is None:
+            return False
+        if not event.is_private_chat():
+            return False
+        try:
+            change = detect_schedule_change(text)
+        except Exception:
+            change = None
+        if not change:
+            return False
+
+        mood = {}
+        try:
+            mood = (self.state.snapshot() or {}).get("mood") or {}
+        except Exception:
+            mood = {}
+        negative = sum(float(mood.get(k) or 0) for k in ("生气", "暴躁", "郁闷", "委屈"))
+        positive = sum(float(mood.get(k) or 0) for k in ("开心", "兴奋", "依恋"))
+        uid = self._primary_uid()
+
+        if negative >= 70 and positive < 60:
+            line = "我不去。我现在烦着呢，别指挥我。"
+            if uid:
+                try:
+                    await self._write_memory_checked(
+                        uid, "他让我「%s」，我心情不好，直接没答应" % change.get("activity"),
+                        kind="event", tier=0)
+                except Exception:
+                    pass
+            await self.context.send_message(event.unified_msg_origin, line)
+            try:
+                event.stop_event()
+            except Exception:
+                pass
+            return True
+
+        key = _clock_now().date().isoformat()
+        items = self.state.schedule.get(key) or self.db.get_schedule(key) or []
+        if not items:
+            return False
+        try:
+            travel = self.cfg_int("move_transition_minutes", 30)
+            hold = self.cfg_int("move_hold_hours", 3)
+            new_items = apply_sched_change(items, change, _clock_now(),
+                                           transition_minutes=travel, hold_hours=hold)
+        except Exception as exc:
+            logger.debug("[amo] 按他的话改日程失败: %s" % exc)
+            return False
+        if new_items == items:
+            return False
+        self.state.schedule[key] = new_items
+        self.db.kv_set("schedule", self.state.schedule)
+        self.db.save_schedule(key, new_items)
+        if uid:
+            try:
+                await self._write_memory_checked(
+                    uid, "他让我「%s」；我答应了，正在路上（%d 分钟后到 %s）"
+                    % (change.get("activity"), max(0, travel), change.get("place")),
+                    kind="event", tier=0)
+            except Exception:
+                pass
+        target = str(change.get("place") or "").strip()
+        if target and target not in ("路上", "车里"):
+            line = "行吧，我往%s去了，路上要 %d 分钟。" % (target, max(5, travel))
+        else:
+            line = "行吧，我这就过去，等我 %d 分钟。" % max(5, travel)
+        await self.context.send_message(event.unified_msg_origin, line)
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+        return True
 
     async def _handle_money_gift(self, event, text) -> bool:
         """他转钱/发红包给她：算借款，走金融账本。

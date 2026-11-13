@@ -1563,5 +1563,17 @@
     "type": "string",
     "description": "【照片】照片提示词前缀",
     "default": "手机随手拍，真实自然，生活感，"
+  },
+  "move_transition_minutes": {
+    "type": "int",
+    "description": "【日程】被他喊走时的路上时间（分钟）",
+    "default": 30,
+    "hint": "他说「回来吧/去超市」时，日程会先插一段「在路上」再到达，不让上一秒在景区下一秒到家。"
+  },
+  "move_hold_hours": {
+    "type": "int",
+    "description": "【日程】到达后保持多久（小时）",
+    "default": 3,
+    "hint": "到达目的地后这段时间的行程跟着改成在那儿；睡觉和吃饭那两格不动。"
   }
 }
