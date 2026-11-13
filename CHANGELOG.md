@@ -1,5 +1,14 @@
 # Changelog
 
+## 8.7.0（大扫除：照片引擎从 1282 行到 157 行）
+
+- `photo_engine.py` 只留两件被复用的事：今日穿搭 `outfit_today()`、图片落地 `_localize()`；主动分享的概率/每日上限/免打扰、万象画卷人设参考图、模板库、试画、候选图、`photo_cache` 清理全删。
+- 主动分享只走一条路：`main.py` 的 `_share_decision`（本地概率 + 活动桶 + 心流 `amo_photo_urge` + 生图插件 `quota()` 记账），不再有第二个定时分享器。
+- 画图引擎只走生图插件 `draw_for()`：删掉 `_find_omni()` 与整段 OmniDraw 调用/超时分支；`diagnostics` / `status_text` 改成报告生图插件连接状态。
+- 终端路由删 9 个（`/photo/test`、`/photo/prompt`、`/photo/prompt_saved`、`/photo/sheet`、`/photo/persona*`、`/photo/template_*`），面板还在用的 `/photo/job|self|last|clear` 保留。
+- 配置表删 16 个 `photo_*` 键（概率/上限/免打扰/人设参考图/模板目录/缓存天数），配置文件里的旧值不再读取。
+- 出行日程小修：酒店睡眠文案不再写「在他电脑里睡着」；回程后的「家」统一用画像里的家（`南明区·小窝`），不再一天「他桌面上」一天「南明区·小窝」。
+
 ## 8.6.2（状态回落不再说自己在「家」）
 
 - `current_activity()` 在日程没落地（还没生成、刚重建、出行覆盖层还没过）时，先看 `_active_trip()`：人在南阳就写「南阳·酒店房间」，过了 `return_hour` 才回本地规则；没有出行时回落逻辑一个字不变（白天公司、晚上家）。

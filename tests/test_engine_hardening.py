@@ -81,18 +81,6 @@ class DrawTaskTests(unittest.TestCase):
         engine._schedule(DT.FakeEvent("给我画一碗面"), "一碗面", "manual")
         self.assertNotIn("test:private:u1", engine._inflight)
 
-    def test_generate_timeout_returns_none(self):
-        class SlowOmni:
-            async def generate_images_for_plugin(self, **kwargs):
-                await asyncio.sleep(5)
-
-        engine, _ = DT.engine_for()
-        engine._omni = SlowOmni()
-        engine._omni_checked = time.monotonic()
-        with mock.patch.object(DE, "GENERATE_TIMEOUT_SECONDS", 0.01):
-            result = asyncio.run(engine._generate(DT.FakeEvent("画"), "一碗面"))
-        self.assertIsNone(result)
-
 
 class PhotoFetchTests(unittest.TestCase):
     def test_fetch_image_rejects_oversized_body(self):
@@ -111,28 +99,6 @@ class PhotoFetchTests(unittest.TestCase):
         with mock.patch("photo_engine.urllib.request.urlopen", return_value=BigResponse()):
             with self.assertRaises(ValueError):
                 PE.PhotoEngine._fetch_image("https://example.com/big.jpg")
-
-    def test_generate_timeout_returns_none(self):
-        class SlowOmni:
-            async def generate_images_for_plugin(self, **kwargs):
-                await asyncio.sleep(5)
-
-        engine, _ = PT.engine_for()
-        with mock.patch.object(PE, "GENERATE_TIMEOUT_SECONDS", 0.01):
-            result = asyncio.run(engine._generate(SlowOmni(), "照片", False))
-        self.assertIsNone(result)
-
-
-class PhotoRecipientTests(unittest.TestCase):
-    def test_fallback_only_sends_to_home_private_chat(self):
-        engine, plugin = PT.engine_for()
-        plugin.db.profiles = [
-            {"uid": "u1", "private_umo": "test:private:u1"},
-            {"uid": "u2", "private_umo": "test:private:u2"},
-        ]
-        plugin._first_private_umo = lambda: "test:private:u1"
-        picked = engine._profiles()
-        self.assertEqual([row["uid"] for row in picked], ["u1"])
 
 
 if __name__ == "__main__":

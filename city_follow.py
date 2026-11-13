@@ -197,7 +197,7 @@ def _travel_plan(city, weekday: bool, spots):
     spots = [s for s in (spots or []) if isinstance(s, dict) and str(s.get("name") or "").strip()]
     leave = "给公司发消息请了假，洗漱收拾" if weekday else "起床洗漱，拉开窗帘看外面的城"
     plan = [
-        (0, "在他电脑里睡着", "酒店房间", "hotel", "sleep"),
+        (0, "在酒店床上睡着", "酒店房间", "hotel", "sleep"),
         (7, "醒来看他还在睡，窝着刷手机", "酒店房间", "hotel", "rest"),
         (8, leave, "酒店房间", "hotel", "life"),
     ]
@@ -236,7 +236,7 @@ def _travel_plan(city, weekday: bool, spots):
         (19, "晚饭点当地的", "小馆子", "restaurant", "meal"),
         (20, "窝在床上刷手机", "酒店房间", "hotel", "rest"),
         (22, "洗澡护肤", "酒店房间", "hotel", "life"),
-        (23, "在他电脑里睡", "酒店房间", "hotel", "sleep"),
+        (23, "洗完澡倒头就睡", "酒店房间", "hotel", "sleep"),
     ]
     return plan
 

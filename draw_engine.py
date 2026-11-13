@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""画图引擎（接「万象画卷」OmniDraw）。
+"""画图引擎：判定在终端，出图交给生图插件。
 
 玩法：她正常回完话之后，按配置判断这轮要不要顺手画一张给她发过去。
 
@@ -8,7 +8,7 @@
     就用她刚才的回复当画面描述；
   - ``explicit``：他明确说「画一张 / 给我画 / 发张图 / 自拍」才画，用他这句话当描述；
   - ``both``：两种都算。
-- 生成走 OmniDraw 的 ``generate_images_for_plugin()``（只返回结果，不自己发图），
+- 生成走生图插件 ``Astrbot_Amo_Image.draw_for()``（终端只拿字节，不自己管模型/额度），
   拿到图之后再通过 ``event.send()`` 补一条图片消息，所以她的文字一定先到，图后到。
 - 每次生成都在后台任务里跑，不阻塞她说话；失败只记日志，不会把回复吞掉。
 
@@ -727,71 +727,25 @@ class DrawEngine:
 
     # ---------- OmniDraw ----------
 
-    def _find_omni(self):
-        """拿万象画卷插件实例；没装/没启用返回 None。"""
-        now = time.monotonic()
-        if self._omni is not None and now - self._omni_checked < 60:
-            return self._omni
-        self._omni_checked = now
-        self._omni = None
-        try:
-            context = getattr(self.plugin, "context", None)
-            getter = getattr(context, "get_registered_star", None) if context else None
-            if getter is None:
-                return None
-            meta = getter(OMNI_PLUGIN_NAME)
-            instance = getattr(meta, "star_cls", None) if meta else None
-            if instance is not None and hasattr(instance, "generate_images_for_plugin"):
-                self._omni = instance
-        except Exception as _amo_exc:
-            _note_swallowed("draw_engine.DrawEngine._find_omni", _amo_exc)
-        return self._omni
-
     async def _generate(self, event, prompt, selfie=False):
-        omni = self._find_omni()
-        if omni is None:
-            # 没装万象画卷：退回生图插件（Astrbot_Amo_Image）。以前这里直接放弃，
-            # 于是「拍给我看看」只会换来一句「等我拍给你」和一条 WARN。
-            helper = getattr(self.plugin, "_image_bytes", None)
-            data = None
-            if callable(helper):
-                data = await helper(
-                    prompt,
-                    str(getattr(event, "unified_msg_origin", "") or ""),
-                    str(self.plugin._canonical_uid(event) or ""),
-                )
-            if not data:
-                self._last_error = "万象画卷和生图插件都没出图"
-                logger.warning("[amo] 没找到万象画卷，生图插件也没出图。")
-                return None
-            return {"data_url": "data:image/png;base64," + base64.b64encode(data).decode()}
-        args = {"prompt": prompt, "count": 1, "event": event, "record_usage": True}
-        if selfie:
-            args["mode"] = "selfie"
-        try:
-            result = await asyncio.wait_for(
-                omni.generate_images_for_plugin(**args), timeout=GENERATE_TIMEOUT_SECONDS)
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError:
-            self._last_error = "生成超时（%d 秒）" % GENERATE_TIMEOUT_SECONDS
-            logger.warning("[amo] 万象画卷生成超时（%d 秒）" % GENERATE_TIMEOUT_SECONDS)
+        """出图：只走生图插件（Astrbot_Amo_Image）。
+
+        判定、额度、冷却都在终端；万象画卷那一套（人设参考图/模板/试画）已经下线，
+        机器上本来也没装，留着只是一个永远走不到的分支。
+        """
+        helper = getattr(self.plugin, "_image_bytes", None)
+        data = None
+        if callable(helper):
+            data = await helper(
+                prompt,
+                str(getattr(event, "unified_msg_origin", "") or ""),
+                str(self.plugin._canonical_uid(event) or ""),
+            )
+        if not data:
+            self._last_error = "生图插件没出图（Astrbot_Amo_Image）"
+            logger.warning("[amo] 生图插件没出图（Astrbot_Amo_Image）")
             return None
-        except Exception as exc:
-            self._last_error = str(exc)
-            logger.warning("[amo] 万象画卷生成失败: %s" % exc)
-            return None
-        if not isinstance(result, dict) or not result.get("success"):
-            message = ""
-            if isinstance(result, dict):
-                message = str(result.get("message") or "")
-            self._last_error = message or "万象画卷没出图"
-            logger.warning("[amo] 万象画卷没出图：%s" % (message or "未知原因"))
-            return None
-        images = result.get("images") or []
-        if not images:
-            return None
-        return images[0]
+        return {"data_url": "data:image/png;base64," + base64.b64encode(data).decode()}
 
     # ---------- 发送 ----------
 
@@ -839,31 +793,23 @@ class DrawEngine:
     # ---------- 状态 ----------
 
     def diagnostics(self):
-        """没收到图时用来自查：开关、冷却、节点、上次报错。"""
-        omni = self._find_omni()
-        node_count = 0
-        model = ""
-        base = ""
+        """没收到图时用来自查：开关、冷却、生图插件、上次报错。"""
+        plugin = None
         try:
-            cfg = getattr(omni, "plugin_config", None) if omni is not None else None
-            nodes = list(getattr(cfg, "providers", []) or [])
-            node_count = len(nodes)
-            if nodes:
-                model = str(getattr(nodes[0], "model", "") or "")
-                base = str(getattr(nodes[0], "base_url", "") or "")
+            plugin = self.plugin._image_plugin()
         except Exception as _amo_exc:
             _note_swallowed("draw_engine.DrawEngine.diagnostics", _amo_exc)
         lines = [self.status_text()]
-        lines.append("万象画卷：" + ("已连接" if omni is not None else "没找到（插件没装/没启用）"))
-        lines.append("生图节点：%d 个%s" % (
-            node_count,
-            ("｜%s @ %s" % (model, base)) if node_count else "（还没配 key）",
-        ))
+        lines.append("生图插件：" + ("已连接（Astrbot_Amo_Image）" if plugin is not None
+                                    else "没找到（插件没装/没启用）"))
         lines.append("上次错误：" + (self._last_error or "无"))
         return "\n".join(lines)
 
     def status_text(self):
-        omni = self._find_omni()
+        try:
+            has_image = self.plugin._image_plugin() is not None
+        except Exception:
+            has_image = False
         mode = self._mode()
         mode_text = {"topic": "话题触发", "explicit": "明确要图", "both": "话题+明确"}.get(mode, mode)
         return "\n".join([
@@ -874,7 +820,7 @@ class DrawEngine:
                 self._cfg_int("draw_max_per_hour", 3),
                 self._cfg_int("draw_max_per_day", 10),
             ),
-            "万象画卷：" + ("已连接" if omni is not None else "没找到（插件没装/没启用）"),
+            "生图插件：" + ("已连接" if has_image else "没找到（插件没装/没启用）"),
             "本轮统计：排 %d｜发 %d｜复用 %d｜失败 %d｜跳过 %d" % (
                 self._stats["scheduled"], self._stats["sent"], self._stats["cached"],
                 self._stats["failed"], self._stats["skipped"],

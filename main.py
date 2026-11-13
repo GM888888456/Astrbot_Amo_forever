@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.6.2"
+PLUGIN_VERSION = "8.7.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -3975,7 +3975,19 @@ class HumanState:
             spots = []
         his = str(self.db.kv_get("his_city", "") or "").strip() or _CITY_DEFAULT
         items = _city_travel_events(name, 0, spots=spots, until_hour=until)
-        items += _city_travel_events(his, until, home=True)
+        back = _city_travel_events(his, until, home=True)
+        # 回程后的「家」要和平时的家同一个名字，别一天写「他桌面上」一天写「南明区·小窝」
+        home_place = ""
+        try:
+            profile = getattr(self, "schedule_profile", {}) or {}
+            home_place = (self.p.cfg_str("schedule_home", "") or profile.get("home") or "").strip()
+        except Exception:
+            home_place = ""
+        if home_place and home_place != his:
+            for item in back:
+                if item.get("zone") == "home":
+                    item["place"] = home_place
+        items += back
         if not items:
             return False
         self.schedule[today] = items
@@ -5246,15 +5258,6 @@ WRITE_ROUTES = frozenset({
     "/worldview/regen", "/worldview_regen",
     "/say",
     "/city/set",
-    "/photo/test",
-    "/photo/prompt",
-    "/photo/prompt_saved",
-    "/photo/sheet",
-    "/photo/persona",
-    "/photo/persona/delete",
-    "/photo/persona/toggle",
-    "/photo/template_dir",
-    "/photo/template_open",
     "/draw/test",
     "/draw/decide",
     "/diary/write", "/diary/import", "/diary/open",
@@ -11922,11 +11925,6 @@ class HumanCorePlugin(Star):
     async def _tick(self):
         if not self._ready or self.state is None:
             return
-        if self.photo is not None:
-            try:
-                await self.photo.tick()
-            except Exception as exc:
-                logger.debug("[amo] 照片任务失败: %s" % exc)
         # 数据插件可能在陪伴之后才装：每 5 分钟重新探测一次，装上就自动接管/迁移
         if (self._data_mem() is None and self._data_store() is None
                 and now_ts() - to_float(getattr(self, "_last_data_probe", 0), 0) > 300):
@@ -13951,19 +13949,10 @@ class HumanCorePlugin(Star):
             ("/weather/brief", self.api_weather_brief, ["GET", "POST"]),
             ("/city/search", self.api_city_search, ["GET", "POST"]),
             ("/city/set", self.api_city_set, ["GET", "POST"]),
-            ("/photo/test", self.api_photo_test, ["GET", "POST"]),
-            ("/photo/prompt", self.api_photo_prompt, ["GET", "POST"]),
-            ("/photo/prompt_saved", self.api_photo_prompt_saved, ["GET", "POST"]),
-            ("/photo/sheet", self.api_photo_sheet, ["GET", "POST"]),
             ("/photo/job", self.api_photo_job, ["GET", "POST"]),
             ("/photo/self", self.api_photo_self, ["GET", "POST"]),
             ("/photo/last", self.api_photo_last, ["GET", "POST"]),
             ("/photo/clear", self.api_photo_clear, ["GET", "POST"]),
-            ("/photo/persona", self.api_photo_persona, ["GET", "POST"]),
-            ("/photo/persona/delete", self.api_photo_persona_delete, ["GET", "POST"]),
-            ("/photo/persona/toggle", self.api_photo_persona_toggle, ["GET", "POST"]),
-            ("/photo/template_dir", self.api_photo_template_dir, ["GET", "POST"]),
-            ("/photo/template_open", self.api_photo_template_open, ["GET", "POST"]),
             ("/draw/status", self.api_draw_status, ["GET", "POST"]),
             ("/draw/test", self.api_draw_test, ["GET", "POST"]),
             ("/draw/decide", self.api_draw_decide, ["GET", "POST"]),
@@ -16947,168 +16936,6 @@ class HumanCorePlugin(Star):
             "msg": job.get("msg") or "",
             "data": job.get("data"),
         }}
-
-    async def api_photo_prompt(self):
-        """面板「按提示词生成」：用角色模板画一张，发到最近会话。"""
-        await self._ensure_ready()
-        data = await self._body()
-        data = data if isinstance(data, dict) else {}
-        prompt = str(data.get("prompt") or "").strip()
-        send = bool(data.get("send", False))
-        if not prompt:
-            return {"code": 1, "msg": "提示词不能为空"}
-        engine = getattr(self, "photo", None)
-        if engine is None:
-            return {"code": 1, "msg": "照片引擎未加载"}
-
-        async def build():
-            item = await engine.generate_prompt(prompt, send=send)
-            if not item:
-                raise RuntimeError("没出图，看日志（[amo] 自定义生图）")
-            url = (item.get("url") or item.get("image_url") or item.get("data_url")
-                   or item.get("file_path") or "")
-            return {"url": url, "preview": engine.preview_data_url(item),
-                    "msg": "已生成并发到聊天" if send else "已生成"}
-
-        return {"code": 0, "data": {"job": self._photo_job_start("prompt", build())}}
-
-    async def api_photo_prompt_saved(self):
-        """保存/读取「按提示词生成」输入框里上一次写的提示词。"""
-        await self._ensure_ready()
-        data = await self._body()
-        data = data if isinstance(data, dict) else {}
-        if "text" in data:
-            try:
-                self.db.kv_set("photo_prompt_saved", str(data.get("text") or ""))
-            except Exception as exc:
-                return {"code": 1, "msg": "保存失败：%s" % exc}
-        try:
-            text = str(self.db.kv_get("photo_prompt_saved", "") or "")
-        except Exception:
-            text = ""
-        return {"code": 0, "data": {"text": text}}
-
-    async def api_photo_sheet(self):
-        """角色三视图：front / side / full。"""
-        await self._ensure_ready()
-        data = await self._body()
-        data = data if isinstance(data, dict) else {}
-        view = str(data.get("view") or "front").strip().lower()
-        engine = getattr(self, "photo", None)
-        if engine is None:
-            return {"code": 1, "msg": "照片引擎未加载"}
-
-        async def build():
-            item = await engine.persona_sheet(view)
-            if not item:
-                raise RuntimeError("没出图，看日志")
-            engine.set_candidate(view, item)
-            url = (item.get("url") or item.get("image_url") or item.get("data_url")
-                   or item.get("file_path") or "")
-            return {"url": url, "preview": engine.preview_data_url(item),
-                    "view": view, "msg": "已生成 " + view}
-
-        return {"code": 0, "data": {"job": self._photo_job_start("sheet", build())}}
-
-    async def api_photo_persona(self):
-        """把选中的三视图设为角色模板。"""
-        await self._ensure_ready()
-        data = await self._body()
-        data = data if isinstance(data, dict) else {}
-        url = str(data.get("url") or "").strip()
-        view = str(data.get("view") or "front").strip().lower()
-        engine = getattr(self, "photo", None)
-        if engine is None:
-            return {"code": 1, "msg": "照片引擎未加载"}
-        # 优先用本地候选文件，避免远端 URL 过期后保存失败
-        candidate = engine.candidate(view)
-        local = str(candidate.get("file") or "")
-        if local and os.path.exists(local):
-            url = local
-        if not url:
-            return {"code": 1, "msg": "缺少图片地址"}
-        message = await engine.adopt_persona(url, view)
-        if message.startswith("✅"):
-            engine.clear_candidate(view)
-        return {"code": 0 if message.startswith("✅") else 1, "msg": message}
-
-    async def api_photo_persona_delete(self):
-        await self._ensure_ready()
-        data = await self._body()
-        data = data if isinstance(data, dict) else {}
-        view = str(data.get("view") or "").strip().lower()
-        engine = getattr(self, "photo", None)
-        if engine is None:
-            return {"code": 1, "msg": "照片引擎未加载"}
-        try:
-            message = await engine.delete_persona(view)
-        except Exception as exc:
-            return {"code": 1, "msg": "删除失败：%s" % exc}
-        return {"code": 0 if message.startswith("✅") else 1, "msg": message}
-
-    async def api_photo_persona_toggle(self):
-        await self._ensure_ready()
-        data = await self._body()
-        data = data if isinstance(data, dict) else {}
-        view = str(data.get("view") or "").strip().lower()
-        enabled = bool(data.get("enabled", True))
-        engine = getattr(self, "photo", None)
-        if engine is None:
-            return {"code": 1, "msg": "照片引擎未加载"}
-        message = engine.set_template_enabled(view, enabled)
-        return {"code": 0 if message.startswith("✅") else 1, "msg": message}
-
-    async def api_photo_template_dir(self):
-        """角色模板保存位置：GET 读取，POST 修改。"""
-        await self._ensure_ready()
-        engine = getattr(self, "photo", None)
-        if engine is None:
-            return {"code": 1, "msg": "照片引擎未加载"}
-        data = await self._body()
-        data = data if isinstance(data, dict) else {}
-        if "dir" in data:
-            folder = str(data.get("dir") or "").strip()
-            try:
-                self.config["photo_template_dir"] = folder
-                if hasattr(self.config, "save_config"):
-                    self.config.save_config()
-            except Exception as exc:
-                return {"code": 1, "msg": "保存失败：%s" % exc}
-        info = engine.template_info()
-        info["configured"] = self.cfg_str("photo_template_dir", "")
-        info["msg"] = "已保存" if "dir" in data else ""
-        return {"code": 0, "data": info}
-
-    async def api_photo_template_open(self):
-        await self._ensure_ready()
-        engine = getattr(self, "photo", None)
-        if engine is None:
-            return {"code": 1, "msg": "照片引擎未加载"}
-        root = engine.template_info().get("root", "")
-        opened = False
-        try:
-            if os.name == "nt" and os.path.isdir(root):
-                os.startfile(root)
-                opened = True
-        except Exception as exc:
-            logger.debug("[amo] 打开模板文件夹失败: %s" % exc)
-        return {"code": 0, "data": {"root": root, "opened": opened}}
-
-    async def api_photo_test(self):
-        """面板「现在发一张」：无视概率，按类别立刻分享一张照片。"""
-        await self._ensure_ready()
-        data = await self._body()
-        data = data if isinstance(data, dict) else {}
-        kind = str(data.get("category") or "daily").strip().lower() or "daily"
-        engine = getattr(self, "photo", None)
-        if engine is None:
-            return {"code": 1, "msg": "照片引擎未加载"}
-
-        async def build():
-            message = await engine.share_now(kind)
-            return {"msg": message}
-
-        return {"code": 0, "data": {"job": self._photo_job_start("test", build())}}
 
     async def api_draw_status(self):
         await self._ensure_ready()

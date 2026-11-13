@@ -1535,7 +1535,11 @@
     "type": "string",
     "description": "【照片】群聊放行策略",
     "default": "at",
-    "options": ["at", "any", "off"],
+    "options": [
+      "at",
+      "any",
+      "off"
+    ],
     "hint": "at（默认）：群里必须真的 @ 她才画；any：群里任何人都能触发（慎用）；off：群聊一律不画。判定在终端本地完成，不叫模型。"
   },
   "draw_dry_run": {
@@ -1555,97 +1559,9 @@
     "default": true,
     "hint": "默认开：按日程在她吃饭、穿搭、逛街、旅游、周末时按概率出图；受每日张数、夜间静默、比例等限制。"
   },
-  "photo_outfit_prob": {
-    "type": "int",
-    "description": "【照片】早起出门分享穿搭概率（%）",
-    "default": 70
-  },
-  "photo_travel_prob": {
-    "type": "int",
-    "description": "【照片】旅游时分享照片概率（%）",
-    "default": 60
-  },
-  "photo_shopping_prob": {
-    "type": "int",
-    "description": "【照片】逛街时分享照片概率（%）",
-    "default": 40
-  },
-  "photo_weekend_prob": {
-    "type": "int",
-    "description": "【照片】周末分享照片概率（%）",
-    "default": 50
-  },
-  "photo_daily_prob": {
-    "type": "int",
-    "description": "【照片】日常分享照片概率（%）",
-    "default": 25
-  },
-  "photo_selfie_ratio": {
-    "type": "int",
-    "description": "【照片】街景/自拍里的自拍占比（%）",
-    "default": 50,
-    "hint": "旅游、逛街、周末、日常按这个比例决定发自拍还是街景；穿搭永远是自拍。"
-  },
-  "photo_daily_cap": {
-    "type": "int",
-    "description": "【照片】每天最多分享几张",
-    "default": 4
-  },
-  "photo_quiet_hours": {
-    "type": "string",
-    "description": "【照片】免打扰时段",
-    "default": "23:00-07:00"
-  },
   "photo_prompt_prefix": {
     "type": "string",
     "description": "【照片】照片提示词前缀",
     "default": "手机随手拍，真实自然，生活感，"
-  },
-  "photo_owner_ids": {
-    "type": "string",
-    "description": "【照片】分享给谁",
-    "default": "",
-    "hint": "逗号分隔；留空则管理员和「相恋」关系。"
-  },
-  "photo_dry_run": {
-    "type": "bool",
-    "description": "【照片】分享演练模式",
-    "default": false,
-    "hint": "只记日志、不调用模型。"
-  },
-  "photo_persona_ref": {
-    "type": "string",
-    "description": "【照片】角色模板图路径",
-    "default": "",
-    "hint": "在「角色三视图」里选一张后自动写入；以后按提示词生图和自拍都会带这张模板。"
-  },
-  "photo_persona_refs": {
-    "type": "string",
-    "description": "【照片】三视图模板映射",
-    "default": "",
-    "hint": "自动维护：正面/侧面/全身各自的模板路径，不用手改。"
-  },
-  "photo_persona_enabled": {
-    "type": "string",
-    "description": "【照片】三视图启用状态",
-    "default": "",
-    "hint": "自动维护：哪些视角的模板参与生图，不用手改。"
-  },
-  "photo_cache_days": {
-    "type": "int",
-    "description": "【照片】生图缓存保留天数",
-    "default": 7,
-    "hint": "只清理 photo_cache 里的旧生成图；模板文件和聊天记录里的图片不受影响。0 = 不自动删。"
-  },
-  "photo_template_dir": {
-    "type": "string",
-    "description": "【照片】角色模板保存文件夹",
-    "default": "",
-    "hint": "留空 = 插件目录下 templates（会跟插件一起备份）；填绝对路径可换位置，插件目录外不随插件备份。"
-  },
-  "photo_debug": {
-    "type": "bool",
-    "description": "【照片】照片调试日志",
-    "default": false
   }
 }

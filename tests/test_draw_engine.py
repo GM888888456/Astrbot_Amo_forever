@@ -95,6 +95,18 @@ class FakePlugin:
         self.photo = FakePhoto()
         self.admin_uids = set()
         self.tasks = []
+        self.image_prompts = []
+        self.image_fail = False
+
+    async def _image_bytes(self, prompt, umo="", uid=""):
+        """生图插件替身：终端只拿字节，出图/额度都在插件那边。"""
+        self.image_prompts.append(prompt)
+        if self.image_fail:
+            return None
+        return b"\x89PNG"
+
+    def _image_plugin(self):
+        return self
 
     def cfg_bool(self, key, default=False):
         value = self.config.get(key, default)
@@ -262,7 +274,7 @@ class RunTests(unittest.TestCase):
         engine.maybe_after_reply(event, "好呀")
         self.assertEqual(len(plugin.tasks), 1)
         asyncio.run(plugin.tasks[0])
-        self.assertEqual(omni.calls, [])
+        self.assertEqual(plugin.image_prompts, [])
         self.assertEqual(event.sent, [])
 
     def test_success_sends_image(self):
@@ -271,21 +283,22 @@ class RunTests(unittest.TestCase):
         event = FakeEvent("给我画一碗面")
         engine.maybe_after_reply(event, "好呀")
         asyncio.run(plugin.tasks[0])
-        self.assertEqual(len(omni.calls), 1)
-        self.assertIn("一碗面", omni.calls[0]["prompt"])
+        self.assertEqual(len(plugin.image_prompts), 1)
+        self.assertIn("一碗面", plugin.image_prompts[0])
         self.assertEqual(len(event.sent), 1)
         self.assertEqual(len(event.sent[0].chain), 1)
 
     def test_failure_does_not_raise(self):
-        engine, plugin = engine_for({}, FakeOmni(fail=True))
+        engine, plugin = engine_for({})
+        plugin.image_fail = True
         event = FakeEvent("给我画一碗面")
         engine.maybe_after_reply(event, "好呀")
         asyncio.run(plugin.tasks[0])
         self.assertEqual(event.sent, [])
 
-    def test_missing_omni_does_not_raise(self):
+    def test_missing_image_plugin_does_not_raise(self):
         engine, plugin = engine_for({}, None)
-        plugin.context.omni = None
+        plugin._image_bytes = None
         event = FakeEvent("给我画一碗面")
         engine.maybe_after_reply(event, "好呀")
         asyncio.run(plugin.tasks[0])
@@ -362,7 +375,7 @@ class RunTests(unittest.TestCase):
         engine._last_prompt.clear()
         engine.maybe_after_reply(FakeEvent("公园在干吗？拍给我看看"), "在跟狗狗玩呢")
         asyncio.run(plugin.tasks.pop(0))
-        self.assertEqual(len(omni.calls), 2)
+        self.assertEqual(len(plugin.image_prompts), 2)
 
     def test_same_prompt_reuses_image_across_platforms(self):
         omni = FakeOmni()
@@ -370,7 +383,7 @@ class RunTests(unittest.TestCase):
         qq = FakeEvent("给我画一碗面", umo="aiocqhttp:private:u1")
         engine.maybe_after_reply(qq, "好呀")
         asyncio.run(plugin.tasks.pop(0))
-        self.assertEqual(len(omni.calls), 1)
+        self.assertEqual(len(plugin.image_prompts), 1)
 
         lark = FakeEvent("给我画一碗面", umo="lark:private:u1")
         plan = engine.decide(lark, "好呀")
@@ -378,7 +391,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(plan["reason"], "cache")
         engine.maybe_after_reply(lark, "好呀")
         asyncio.run(plugin.tasks.pop(0))
-        self.assertEqual(len(omni.calls), 1)      # 没重新生成
+        self.assertEqual(len(plugin.image_prompts), 1)      # 没重新生成
         self.assertEqual(len(lark.sent), 1)       # 但在飞书那边发了同一张
         self.assertEqual(len(qq.sent), 1)
 
@@ -389,7 +402,7 @@ class RunTests(unittest.TestCase):
         asyncio.run(plugin.tasks.pop(0))
         engine.maybe_after_reply(FakeEvent("给我画一只猫"), "好呀")
         asyncio.run(plugin.tasks.pop(0))
-        self.assertEqual(len(omni.calls), 2)
+        self.assertEqual(len(plugin.image_prompts), 2)
 
     def test_cache_can_be_disabled(self):
         omni = FakeOmni()
@@ -399,7 +412,7 @@ class RunTests(unittest.TestCase):
         engine._last_prompt.clear()  # 绕过 120 秒同句去重，专门验证缓存开关
         engine.maybe_after_reply(FakeEvent("给我画一碗面"), "好呀")
         asyncio.run(plugin.tasks.pop(0))
-        self.assertEqual(len(omni.calls), 2)
+        self.assertEqual(len(plugin.image_prompts), 2)
 
     def test_status_text(self):
         engine, _ = engine_for()
