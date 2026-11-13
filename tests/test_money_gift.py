@@ -76,15 +76,66 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(obj._borrow_line(can_ask=True), "")
 
 
+class FakeDB:
+    def __init__(self):
+        self.kv = {}
+
+    def kv_get(self, key, default=None):
+        return self.kv.get(key, default)
+
+    def kv_set(self, key, value):
+        self.kv[key] = value
+
+
+def with_gift(amount=7150.0, owed=7150.0):
+    obj = build()
+    obj.db = FakeDB()
+    obj._finance = lambda: type("F", (), {"money_gift": lambda self: {
+        "amount": amount, "channel": "transfer", "owed": owed, "seconds": 10}})()
+    return obj
+
+
 class GiftLineTests(unittest.TestCase):
     def test_gift_is_for_eating_well(self):
-        obj = build()
-        obj._finance = lambda: type("F", (), {"money_gift": lambda self: {
-            "amount": 7150.0, "channel": "transfer", "owed": 7150.0,
-            "seconds": 10}})()
-        text = obj._gift_line()
+        text = with_gift()._gift_line()
         self.assertIn("吃好的", text)
-        self.assertIn("老公今天怎么对我这么好啊", text)
+
+    def test_gift_line_does_not_dictate_a_fixed_sentence(self):
+        """以前上下文里写死「老公今天怎么对我这么好啊」，模型就每笔都复读。"""
+        text = with_gift()._gift_line()
+        self.assertNotIn("怎么对我这么好", text)
+        self.assertIn("这轮的反应", text)
+        self.assertIn("别套用", text)
+
+    def test_gift_line_style_changes_between_gifts(self):
+        obj = with_gift()
+        first = obj._gift_line()
+        second = obj._gift_line()
+        self.assertNotEqual(first, second)
+
+
+class GiftReplyVarietyTests(unittest.TestCase):
+    def test_canned_line_is_gone(self):
+        for template in M.HumanCorePlugin.GIFT_REPLIES + M.HumanCorePlugin.GIFT_REPLIES_BIG:
+            self.assertNotIn("怎么对我这么好", template)
+
+    def test_replies_do_not_repeat_the_previous_one(self):
+        obj = with_gift()
+        seen = set()
+        last = None
+        for _ in range(12):
+            text = obj._warm_gift_reply("转账", 200.0, 800.0)
+            self.assertNotEqual(text, last)
+            last = text
+            seen.add(text)
+        self.assertGreaterEqual(len(seen), 5)
+
+    def test_big_amount_uses_big_pool(self):
+        obj = with_gift()
+        text = obj._warm_gift_reply("转账", 5000.0, 5000.0)
+        pool = [t.format(kind="转账", amt="5000", owed=5000.0)
+                for t in M.HumanCorePlugin.GIFT_REPLIES_BIG]
+        self.assertIn(text, pool)
 
 
 class PrivateOnlyTests(unittest.TestCase):

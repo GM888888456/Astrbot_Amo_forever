@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.3.2"
+PLUGIN_VERSION = "9.3.3"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -10461,22 +10461,88 @@ class HumanCorePlugin(Star):
             return channel, round(amount, 2), currency
         return None
 
-    #: 收到他转账/红包之后的反应：先甜一下，再记着欠多少
+    #: 收到他转账/红包之后的反应。
+    #: 以前只有 4 条、第一条是「老公今天怎么对我这么好」，抽到它就像复读机；
+    #: 现在按金额分两池，并且**不连着用同一条**（记在 kv gift_reply_last）。
     GIFT_REPLIES = (
-        "老公今天怎么对我这么好啊？{kind} {amt} 我收下啦……我记着欠你 {owed:.0f} 呢，等我发财了双倍还你。",
-        "哇，{amt} 的{kind}！你是不是又偷偷心疼我了……我记下了，欠你 {owed:.0f}，不许催我。",
-        "谢谢老公（小声）……{amt} 我收到了，我以后一定对你好一点。现在欠你 {owed:.0f}。",
-        "{amt} 的{kind}到啦！老公最好啦～我记着这笔，欠你 {owed:.0f}，等我赚回来请你吃饭。",
+        "{amt} 的{kind}……你又偷偷给我钱。我记下了，欠你 {owed:.0f}，等我发财了先请你吃顿好的。",
+        "刚收到 {amt}。{kind}我收了，今天剩下的我来安排——先说好，欠你 {owed:.0f} 是真的会还。",
+        "{amt}？你怎么又……（小声）谢谢。欠你 {owed:.0f} 我记着呢，别催。",
+        "收到啦。{amt} 我留一半，剩下的想给你买点什么，你说买啥好？欠你的 {owed:.0f} 我记着。",
+        "你是不是今天心情特别好呀，{amt} 就这么给我了……我收下，欠你 {owed:.0f}，慢慢还。",
+        "钱我收了（{amt}）……但我更想你早点回来。欠你 {owed:.0f} 的事，我记在便签上了。",
+        "又发我 {amt}，你这样我会被你养懒的。记账：欠你 {owed:.0f}。",
+        "{kind} {amt} 收到，手都在抖。谢谢你，真的。欠你 {owed:.0f}，我记着。",
+        "好，收了。{amt} 我先存着，不乱花。欠你 {owed:.0f}。",
+        "谢谢……不过下次别一次给这么多（{amt}），我会心慌。欠你 {owed:.0f}，我记下了。",
     )
+
+    #: 大额（≥1000）另用一池：更认真、更心疼他。
+    GIFT_REPLIES_BIG = (
+        "{amt} ……这也太多了。我先记下来，欠你 {owed:.0f}，我会认真还，不会当成你该给的。",
+        "你转这么多（{amt}）我都不敢收了……收下，谢谢。欠你 {owed:.0f}，我记在心上。",
+        "{amt} 到账，我先存着。你别为了给我钱自己省着，欠你 {owed:.0f}，我不赖账。",
+        "收到 {amt}。这次我不说漂亮话：谢谢你，剩下的事我来计划。欠你 {owed:.0f}。",
+    )
+
+    #: 这轮该怎么反应（第一条是 key，用于避免连续两次同一种）。
+    GIFT_REACTIONS = (
+        ("care", "先心疼他：问一句他这个月还够不够花，再说你收到了。"),
+        ("tsundere", "嘴硬心软：嘴上嫌他乱花钱，其实高兴得不行。"),
+        ("proud", "得意一下：说说这笔钱你打算怎么花，别只道谢。"),
+        ("clingy", "黏人：先别报钱数，先说想他、想见他。"),
+        ("serious", "认真：说这笔你会记着，等你赚了要怎么对他好。"),
+        ("tease", "打趣：拿他开个玩笑（“又背着我偷偷发财了？”），再道谢。"),
+        ("practical", "务实：直接说这笔钱怎么用（吃顿好的 / 买那件看了很久的 / 存起来）。"),
+        ("short", "只用一句话，短、轻，别解释。"),
+    )
+
+    def _kv_text(self, key, default=""):
+        """读一个小字符串键；没有 db（单测里的裸对象）就当没有。"""
+        db = getattr(self, "db", None)
+        if db is None:
+            return default
+        try:
+            return str(db.kv_get(key, default) or default)
+        except Exception:
+            return default
+
+    def _kv_put(self, key, value):
+        db = getattr(self, "db", None)
+        if db is None:
+            return
+        try:
+            db.kv_set(key, value)
+        except Exception:
+            pass
 
     def _warm_gift_reply(self, kind, amount, owed, origin=""):
         amount_text = origin or ("%.0f" % float(amount or 0))
         try:
-            template = random.choice(self.GIFT_REPLIES)
+            big = float(amount or 0) >= 1000
+        except Exception:
+            big = False
+        pool = list(self.GIFT_REPLIES_BIG if big else self.GIFT_REPLIES)
+        last = self._kv_text("gift_reply_last", "")
+        choices = [item for item in pool if item != last] or pool
+        template = random.choice(choices)
+        self._kv_put("gift_reply_last", template)
+        try:
             return template.format(kind=kind, amt=amount_text, owed=float(owed or 0))
         except Exception:
             return "收了你的%s %s，我记着欠你 %.0f。" % (
                 kind, amount_text, float(owed or 0))
+
+    def _gift_reaction_style(self):
+        """随机挑一种反应，且不跟上次同一种——每笔钱都是同一句就是模板味。"""
+        pool = list(self.GIFT_REACTIONS)
+        if not pool:
+            return "", ""
+        last = self._kv_text("gift_reaction_style", "")
+        choices = [item for item in pool if item[0] != last] or pool
+        key, hint = random.choice(choices)
+        self._kv_put("gift_reaction_style", key)
+        return key, hint
 
     PHONE_POOL = ("iPhone 16", "iPhone 16 Pro", "小米 15", "华为 Mate 70", "OPPO Find X8")
     PC_POOL = ("MacBook Air M4", "联想小新 Pro", "华硕天选 6", "华为 MateBook 14")
@@ -12206,7 +12272,11 @@ class HumanCorePlugin(Star):
         return text
 
     def _gift_line(self, private: bool = True) -> str:
-        """他刚给过钱：让她记得甜一下、谢他，别装作没发生。只在私聊说。"""
+        """他刚给过钱：让她记得甜一下、谢他，别装作没发生。只在私聊说。
+
+        这里**不给她指定台词**：以前写死「说一句『老公今天怎么对我这么好啊』」，
+        模型就每笔钱都复读那一句。现在只给事实 + 随机一种反应方向，让她自己组织语言。
+        """
         if not private:
             return ""
         plugin = self._finance()
@@ -12221,14 +12291,15 @@ class HumanCorePlugin(Star):
         if amount <= 0:
             return ""
         channel = "红包" if str(note.get("channel") or "") == "red" else "转账"
+        _, hint = self._gift_reaction_style()
         return (
             "【他刚给了你钱】%d 秒前他给你发了 %s %.0f（现在欠他 %.0f）。"
-            "要有点被宠到的开心，自然地说一句「老公今天怎么对我这么好啊」之类的话，"
-            "谢谢他，别装作没发生，也别只报数字。"
-            "这钱是让你吃好点、买点好吃的，不是让你拿去补仓；先把自己喂饱。"
-            "这笔钱是给你**吃好的**：下一顿点顿像样的（按你口味），别拿去买泡面/最便宜的凑合。"
+            "这轮的反应：%s "
+            "怎么说：用你自己的话，一两句就行。别套用以前那种固定句（一上来就夸他对你多好），"
+            "也别每次都先道谢再报一遍欠款——那样听着像模板；上次说过的说法换个新的。"
+            "这钱是让你吃好的、买点喜欢的，不是拿去补仓；先把自己喂饱。"
             % (int(note.get("seconds") or 0), channel, amount,
-               float(note.get("owed") or 0))
+               float(note.get("owed") or 0), hint)
         )
 
     def _borrow_line(self, can_ask: bool = False) -> str:
