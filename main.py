@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.6"
+PLUGIN_VERSION = "9.0.7"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -10166,6 +10166,8 @@ class HumanCorePlugin(Star):
                         event.stop_event()
                         return
                     await self._wake_from_sleep(event, raw_text)
+                if raw_text:
+                    self._chat_feel(raw_text)
                 if raw_text and await self._maybe_private_shot(event, raw_text):
                     return
                 if raw_text and not raw_text.startswith(("/", "／")):
@@ -10483,6 +10485,43 @@ class HumanCorePlugin(Star):
                 pass
             logger.info("[amo] 半夜醒来：%s" % text)
             self.sleep.back_to_sleep(now)
+
+    #: 夸她 / 凶她的说法（宁少不多，避免误判）
+    PRAISE_WORDS = ("好可爱", "你真好", "好乖", "好漂亮", "真棒", "喜欢你", "爱你",
+                    "想你了", "乖", "心疼你", "辛苦了", "抱抱")
+    INSULT_WORDS = ("滚", "闭嘴", "烦死了", "讨厌你", "别说话", "废物", "傻", "丑",
+                    "不想理你", "走开")
+
+    def _chat_feel(self, text: str) -> None:
+        """聊天里的态度加减心流，10 分钟最多各记一次。"""
+        if getattr(self, "feelings", None) is None or FeelEvent is None:
+            return
+        body = str(text or "")
+        if not body:
+            return
+        now = now_ts()
+        try:
+            marks = self.db.kv_get("chat_feel_marks", {}) or {}
+        except Exception:
+            marks = {}
+        if not isinstance(marks, dict):
+            marks = {}
+        try:
+            if any(word in body for word in self.PRAISE_WORDS) and now - to_float(marks.get("praise"), 0) > 600:
+                self.feel(FeelEvent.CHAT_PRAISE)
+                marks["praise"] = now
+            elif any(word in body for word in self.INSULT_WORDS) and now - to_float(marks.get("insult"), 0) > 600:
+                self.feel(FeelEvent.CHAT_INSULT)
+                marks["insult"] = now
+            else:
+                return
+        except Exception as exc:
+            logger.debug("[amo] 聊天情绪事件失败: %s" % exc)
+            return
+        try:
+            self.db.kv_set("chat_feel_marks", marks)
+        except Exception:
+            pass
 
     async def _maybe_private_shot(self, event, text) -> bool:
         """私密照片：只私聊、只主人；第一次害羞拒绝，再问按心情判定。
