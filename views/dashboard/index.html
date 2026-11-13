@@ -1211,6 +1211,409 @@
       }
     }
 
+    async function action(name, button) {
+      const old = button.textContent;
+      button.disabled = true;
+      button.textContent = "处理中…";
+      try {
+        const result = await call(name);
+        if (result && result.code && result.code !== 0) throw new Error(result.msg || "操作失败");
+        toast("完成");
+        await load();
+      } catch (error) {
+        toast(error.message || "操作失败", true);
+      } finally {
+        button.disabled = false;
+        button.textContent = old;
+      }
+    }
+
+    document.getElementById("btnRefresh").addEventListener("click", async (event) => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      try { await load(); toast("已刷新"); } catch (e) { toast(e.message || "刷新失败", true); }
+      finally { btn.disabled = false; }
+    });
+    document.getElementById("btnWeather").addEventListener("click", (e) => action("weather", e.currentTarget));
+    document.getElementById("btnSchedule").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        await call("schedule_regen");
+        await loadSchedule();
+        showTab("schedule");
+        toast("日程已重建");
+      } catch (error) {
+        toast("重建失败：" + (error && error.message ? error.message : error), true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    document.getElementById("btnWorld").addEventListener("click", async (e) => {
+      await action("worldview_regen", e.currentTarget);
+      await loadWorld();
+    });
+    document.getElementById("worldDialect").addEventListener("change", async (event) => {
+      const select = event.currentTarget;
+      const value = select.value;
+      const plain = value === "普通话";
+      select.disabled = true;
+      try {
+        const changes = plain
+          ? { dialect_style: "普通话", dialect_enabled: false, create_dialect_kb: false }
+          : { dialect_style: value, dialect_enabled: true, create_dialect_kb: true };
+        const result = await call("config_save", { changes });
+        if (result && result.code && result.code !== 0) throw new Error(result.msg || "切换失败");
+        toast(plain ? "已切到普通话：方言已关闭（不再查方言库）" : "语种已切换：" + value);
+      } catch (error) {
+        toast("切换失败：" + (error.message || error), true);
+      } finally {
+        select.disabled = false;
+      }
+    });
+    document.getElementById("btnKb").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const select = document.getElementById("worldDialect");
+      const style = select ? select.value : "贵州话";
+      if (style === "普通话") {
+        toast("普通话不需要方言库：已保持关闭");
+        return;
+      }
+      const old = button.textContent;
+      button.disabled = true;
+      button.textContent = "重建中…";
+      try {
+        const saved = await call("config_save", { changes: { dialect_style: style, dialect_enabled: true } });
+        if (saved && saved.code && saved.code !== 0) throw new Error(saved.msg || "保存语种失败");
+        const result = await call("kb_regen", { dialect_style: style });
+        if (result && result.code && result.code !== 0) throw new Error(result.msg || "重建失败");
+        toast("语种库已重建：" + style);
+        await load();
+      } catch (error) {
+        toast("重建失败：" + (error.message || error), true);
+      } finally {
+        button.disabled = false;
+        button.textContent = old;
+      }
+    });
+    document.getElementById("btnScenicKb").addEventListener("click", (e) => action("scenic_kb_regen", e.currentTarget));
+
+    function worldText(value) {
+      if (Array.isArray(value)) return value.join("、");
+      return value === undefined || value === null ? "" : String(value);
+    }
+
+    // 世界文档照片：只做本地预览，不上传后端、不解析。
+    const WORLD_PHOTO_KEY = "amo_world_portrait";
+    let lastWorldPhoto = "";
+    let worldPhotoLoaded = false;
+    let worldPhotoTimer = null;
+
+    function applyWorldPhoto(src) {
+      const img = document.getElementById("worldPhotoImg");
+      if (!img) return;
+      lastWorldPhoto = src || "";
+      if (src) {
+        img.src = src;
+        img.hidden = false;
+      } else {
+        img.removeAttribute("src");
+        img.hidden = true;
+      }
+    }
+
+    function ensureWorldPhoto(box) {
+      let photo = document.getElementById("worldPhoto");
+      if (!photo) {
+        photo = document.createElement("div");
+        photo.id = "worldPhoto";
+        photo.className = "world-photo";
+        photo.setAttribute("role", "button");
+        photo.tabIndex = 0;
+        const img = document.createElement("img");
+        img.id = "worldPhotoImg";
+        img.alt = "";
+        img.hidden = true;
+        photo.appendChild(img);
+      }
+      box.appendChild(photo);
+      const img = document.getElementById("worldPhotoImg");
+      if (img && !img.getAttribute("src")) {
+        try {
+          const saved = localStorage.getItem(WORLD_PHOTO_KEY) || "";
+          if (saved) applyWorldPhoto(saved);
+        } catch (error) {}
+        if (img && !img.getAttribute("src") && lastWorldPhoto) applyWorldPhoto(lastWorldPhoto);
+      }
+      bindWorldPhotoTap(photo);
+      return photo;
+    }
+
+    // 单击 = 打开证件照面板（自填衣服）；双击 = 打开二级 UI（照片页）；三击 = 取消/清掉照片。
+    // 生成要几十秒，先占位再轮询。
+    let worldPhotoTapTimer = null;
+    let worldPhotoTapCount = 0;
+    let worldPhotoBusy = false;
+
+    function bindWorldPhotoTap(photo) {
+      if (!photo || photo.dataset.bound === "1") return;
+      photo.dataset.bound = "1";
+      photo.addEventListener("click", () => {
+        if (worldPhotoBusy) return;
+        worldPhotoTapCount += 1;
+        if (worldPhotoTapTimer) clearTimeout(worldPhotoTapTimer);
+        worldPhotoTapTimer = setTimeout(() => {
+          const count = worldPhotoTapCount;
+          worldPhotoTapCount = 0;
+          worldPhotoTapTimer = null;
+          if (count >= 3) clearWorldPhoto();
+          else if (count === 2) openSheet();
+          else openIdPhotoDialog();
+        }, 420);
+      });
+      photo.title = "单击：生成证件照；双击：打开二级 UI；三击：取消";
+    }
+
+    // 刷新/重开面板后取回服务端存的那张图（iframe 里 localStorage 不可靠）
+    function loadSavedWorldPhoto() {
+      if (worldPhotoLoaded) return;
+      worldPhotoLoaded = true;
+      try {
+        const pending = call("photo/last", {});
+        pending.then((res) => {
+          const data = objectFrom(res) || {};
+          const src = data.image || "";
+          if (!src) return;
+          const img = document.getElementById("worldPhotoImg");
+          if (!img || img.getAttribute("src")) return;
+          applyWorldPhoto(src);
+        }).catch(() => {});
+      } catch (error) {}
+    }
+
+    function clearWorldPhoto() {
+      const photo = document.getElementById("worldPhoto");
+      applyWorldPhoto("");
+      try { localStorage.removeItem(WORLD_PHOTO_KEY); } catch (error) {}
+      try { const p = call("photo/clear", {}); if (p && p.catch) p.catch(() => {}); } catch (error) {}
+      if (photo) photo.dataset.state = "已取消";
+      setTimeout(() => { if (photo) photo.dataset.state = ""; }, 1400);
+    }
+
+    function openIdPhotoDialog() {
+      let box = document.getElementById("idPhotoDialog");
+      if (box) {
+        box.hidden = false;
+        const input = document.getElementById("idPhotoClothes");
+        if (input) input.focus();
+        return;
+      }
+      box = document.createElement("div");
+      box.id = "idPhotoDialog";
+      box.className = "id-photo-dialog";
+      box.innerHTML =
+        '<div class="ipd-title">生成一寸证件照</div>' +
+        '<div class="sub">脸、五官、身材不变，只换衣服</div>' +
+        '<input id="idPhotoClothes" placeholder="衣服，例如：白衬衫 / 深色西装 / 藏青针织衫" />' +
+        '<div class="row"><button class="btn" id="idPhotoGo" type="button">生成</button>' +
+        '<button class="link" id="idPhotoCancel" type="button">取消</button></div>';
+      document.body.appendChild(box);
+      document.getElementById("idPhotoCancel").addEventListener("click", () => { box.hidden = true; });
+      document.getElementById("idPhotoGo").addEventListener("click", async () => {
+        const clothes = (document.getElementById("idPhotoClothes").value || "").trim();
+        box.hidden = true;
+        await requestWorldPhoto("id", clothes);
+      });
+    }
+
+    // 桥接已经剥掉外层 data，而任务返回体里自己也有一个 data 字段：
+    // 再用 objectFrom() 会连 status 一起剥掉，轮询就永远等不到 done。
+    function jobFrom(res) {
+      let cur = res;
+      for (let i = 0; i < 4; i += 1) {
+        if (!cur || typeof cur !== "object") return {};
+        if (cur.status !== undefined) return cur;
+        if (cur.data && typeof cur.data === "object") { cur = cur.data; continue; }
+        return cur;
+      }
+      return cur && typeof cur === "object" ? cur : {};
+    }
+
+    async function pollPhotoJob(jobId, timeoutMs) {
+      const started = Date.now();
+      let lastError = "";
+      while (Date.now() - started < timeoutMs) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        let payload = {};
+        try {
+          payload = jobFrom(await call("photo/job", { id: jobId }));
+        } catch (error) {
+          const msg = String((error && error.message) || error);
+          // 后端明确说任务丢了（插件重载过）或鉴权失败：立刻报错，别让人干等三分钟
+          if (/任务不存在|未授权|Missing API key|\b40[13]\b/.test(msg)) throw new Error(msg.slice(0, 80));
+          lastError = msg;
+          continue;
+        }
+        if (payload.status === "done") return payload.data || {};
+        if (payload.status === "error") throw new Error(payload.msg || "生成失败");
+      }
+      throw new Error(lastError ? ("生成超时：" + lastError.slice(0, 40)) : "生成超时，稍后再试");
+    }
+
+    async function requestWorldPhoto(kind, clothes) {
+      const photo = document.getElementById("worldPhoto");
+      if (!photo) return;
+      worldPhotoBusy = true;
+      photo.classList.add("loading");
+      const label = kind === "id" ? "正在生成证件照…" : "正在拍照…";
+      photo.dataset.state = label;
+      try {
+        const start = objectFrom(await call("photo/self", { kind, clothes: clothes || "" })) || {};
+        const jobId = start.job;
+        if (!jobId) throw new Error("后端没返回任务号");
+        const data = await pollPhotoJob(jobId, 200000);
+        if (!data.image) throw new Error("没拿到图片");
+        applyWorldPhoto(data.image);
+        try { localStorage.setItem(WORLD_PHOTO_KEY, data.image); } catch (error) {}
+        photo.dataset.state = "";
+      } catch (error) {
+        const msg = String((error && error.message) || error).slice(0, 60);
+        photo.dataset.state = msg.slice(0, 40);
+        toast("照片生成失败：" + msg, true);
+      } finally {
+        photo.classList.remove("loading");
+        worldPhotoBusy = false;
+      }
+    }
+
+    function renderWorld(world) {
+      const box = document.getElementById("worldDoc");
+      box.textContent = "";
+      ensureWorldPhoto(box);
+      // 服务端存的那张图跟着 worldview 一起回来，刷新也能直接画上
+      const serverPhoto = worldText(world && world.panel_photo) || "";
+      const photoImg = document.getElementById("worldPhotoImg");
+      if (photoImg && !photoImg.getAttribute("src")) {
+        if (serverPhoto) applyWorldPhoto(serverPhoto);
+        else loadSavedWorldPhoto();
+      }
+      const rows = [
+        ["名字", world.name],
+        ["年龄", world.age],
+        ["城市", world.city],
+        ["职业", world.occupation],
+        ["任职", world.workplace],
+        ["性格", world.personality],
+        ["爱好", world.hobbies],
+        ["日常", world.daily_life],
+        ["世界规则", world.world_rules],
+        ["简介", world.summary],
+      ];
+      let count = 0;
+      rows.forEach(([label, value], index) => {
+        const text = worldText(value).trim();
+        if (!text) return;
+        count += 1;
+        const row = document.createElement("div");
+        row.className = "world-row";
+        if (index >= 2) row.style.gridColumn = "1 / -1";
+        const title = document.createElement("h3");
+        title.textContent = label;
+        const para = document.createElement("p");
+        para.textContent = text;
+        row.appendChild(title);
+        row.appendChild(para);
+        box.appendChild(row);
+      });
+      if (!count) box.textContent = "还没有生成世界文档。";
+    }
+
+    async function loadWorld() {
+      try {
+        const result = await call("worldview");
+        const data = objectFrom(result);
+        renderWorld(data.worldview || data);
+      } catch (error) {
+        document.getElementById("worldDoc").textContent = "读取失败：" + (error.message || error);
+      }
+    }
+
+    async function openSettingsFor(term) {
+      if (!configItems.length) await loadSettings();
+      const paramButton = document.querySelector('.tabs .tab[data-tab="settings"][data-group="状态"]');
+      showTab("settings", "状态", paramButton);
+      const input = document.getElementById("settingsSearch");
+      input.value = term;
+      input.dispatchEvent(new Event("input"));
+      const list = document.getElementById("settingsList");
+      if (list) list.scrollIntoView({ block: "start" });
+    }
+
+    document.getElementById("periodCard").addEventListener("click", () => openSettingsFor("period"));
+    document.getElementById("healthCard").addEventListener("click", () => openSettingsFor("sick"));
+
+
+    function listFrom(res) {
+      if (Array.isArray(res)) return res;
+      if (res && Array.isArray(res.data)) return res.data;
+      if (res && Array.isArray(res.items)) return res.items;
+      return [];
+    }
+
+    const EMOTION_CN = { joy: "喜", anger: "怒", sadness: "哀", fear: "惧", love: "爱", disgust: "恶", surprise: "惊" };
+    const DESIRE_CN = { desire_eye: "眼", desire_ear: "耳", desire_nose: "鼻", desire_tongue: "舌", desire_body: "身", desire_mind: "意" };
+
+    function heartflowRow(label, value) {
+      const row = document.createElement("div");
+      row.className = "bar-row";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const track = document.createElement("div");
+      track.className = "track";
+      const fill = document.createElement("span");
+      fill.className = "fill";
+      fill.style.width = Math.max(0, Math.min(100, value)) + "%";
+      fill.style.background = "linear-gradient(90deg, var(--pink), #f3a6c8)";
+      track.appendChild(fill);
+      const num = document.createElement("span");
+      num.className = "num";
+      num.textContent = String(Math.round(value));
+      row.appendChild(name); row.appendChild(track); row.appendChild(num);
+      return row;
+    }
+
+    /* 七情只读；六欲折在 details 里；数值只能由事件驱动，面板改不了 */
+    function renderHeartflow(hf) {
+      const values = hf || {};
+      const bars = document.getElementById("moodBars");
+      if (bars) {
+        bars.textContent = "";
+        let total = 0, topName = "—", topValue = -1;
+        Object.keys(EMOTION_CN).forEach((key) => {
+          const value = Math.max(0, Math.min(100, Number(values[key] || 0)));
+          total += value;
+          if (value > topValue) { topValue = value; topName = EMOTION_CN[key]; }
+          bars.appendChild(heartflowRow(EMOTION_CN[key], value));
+        });
+        const dominant = document.getElementById("dominant");
+        if (dominant) dominant.textContent = topValue >= 0 ? topName : "—";
+        const score = document.getElementById("moodScore");
+        if (score) score.textContent = String(Math.round(total / 7));
+      }
+      const desires = document.getElementById("desireBars");
+      if (desires) {
+        desires.textContent = "";
+        Object.keys(DESIRE_CN).forEach((key) => {
+          desires.appendChild(heartflowRow(DESIRE_CN[key], Math.max(0, Math.min(100, Number(values[key] || 0)))));
+        });
+      }
+      const physio = document.getElementById("physioLine");
+      if (physio) {
+        physio.textContent = "生理：饿 " + Math.round(Number(values.hunger || 0)) +
+          " · 精力 " + Math.round(Number(values.energy || 0));
+      }
+    }
+
     let usageLoaded = false;
 
     function usageNum(value) {
