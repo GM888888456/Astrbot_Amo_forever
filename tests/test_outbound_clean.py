@@ -63,6 +63,38 @@ class FakeImagePlugin:
         return b"\x89PNG"
 
 
+class ChargeCacheTests(unittest.TestCase):
+    """终端缓存也不能把「同号不同额」当同一笔账。"""
+
+    def plugin(self):
+        p = object.__new__(amo_main.HumanCorePlugin)
+        p._charge_cache = {}
+        p._charge_fail = {}
+        p.db = FakeDB()
+        p.balance = lambda: 100.0
+        return p
+
+    def test_same_amount_replays(self):
+        p = self.plugin()
+        p._charge_cache_put("rid-1", {"ok": True, "balance": 900.0}, amount=100.0)
+        hit = p._charge_cache_get("rid-1", amount=100.0)
+        self.assertTrue(hit["ok"])
+        self.assertNotEqual(hit.get("code"), "idempotency_conflict")
+
+    def test_different_amount_is_conflict(self):
+        p = self.plugin()
+        p._charge_cache_put("rid-2", {"ok": True, "balance": 900.0}, amount=100.0)
+        hit = p._charge_cache_get("rid-2", amount=250.0)
+        self.assertFalse(hit["ok"])
+        self.assertEqual(hit["code"], "idempotency_conflict")
+
+    def test_legacy_entry_without_amount_replays(self):
+        p = self.plugin()
+        p._charge_cache["rid-3"] = {"ok": True, "balance": 900.0}
+        hit = p._charge_cache_get("rid-3", amount=999.0)
+        self.assertTrue(hit["ok"], "老流水没有金额可比，不能误判冲突")
+
+
 class TurnSnapshotTests(unittest.TestCase):
     """聊天注入和出图必须用同一份「她在哪」。"""
 

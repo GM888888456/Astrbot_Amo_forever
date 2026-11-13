@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.7.3"
+PLUGIN_VERSION = "8.7.4"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -16324,17 +16324,38 @@ class HumanCorePlugin(Star):
     #: 持久化多少条成功幂等号（够覆盖「重启后重试同一笔」就行）。
     CHARGE_OK_KEEP = 200
 
-    def _charge_cache_get(self, request_id):
+    def _charge_conflict(self, note="终端缓存"):
+        """同一个幂等号配了不同金额：调用方拿错了号，不许当同一笔账复用。"""
+        return {"ok": False, "code": "idempotency_conflict", "repeated": True,
+                "reason": "同一幂等号的金额不一致（%s）" % note,
+                "balance": self.balance()}
+
+    @staticmethod
+    def _amount_conflicts(entry, amount):
+        if not isinstance(entry, dict) or amount is None:
+            return False
+        stored = entry.get("_amount")
+        if stored is None:
+            return False
+        try:
+            return abs(round(float(stored), 2) - round(float(amount), 2)) > 0.005
+        except (TypeError, ValueError):
+            return False
+
+    def _charge_cache_get(self, request_id, amount=None):
         """查幂等号。
 
         - 成功单：内存 + 磁盘（``charge_ok``），重启后同一笔不会再扣；
         - 失败单：只留 60 秒，补钱之后能重试——永久缓存失败等于把这笔锁死。
+        - 金额对不上：说明调用方拿错了号，返回 ``idempotency_conflict``。
         """
         if not request_id:
             return None
         cache = getattr(self, "_charge_cache", None) or {}
         hit = cache.get(request_id)
         if isinstance(hit, dict):
+            if self._amount_conflicts(hit, amount):
+                return self._charge_conflict("内存")
             return dict(hit)
         try:
             stored = self.db.kv_get("charge_ok", {}) or {}
@@ -16342,6 +16363,8 @@ class HumanCorePlugin(Star):
             stored = {}
         entry = stored.get(request_id) if isinstance(stored, dict) else None
         if isinstance(entry, dict) and entry.get("ok"):
+            if self._amount_conflicts(entry, amount):
+                return self._charge_conflict("落库")
             return dict(entry)
         fail = (getattr(self, "_charge_fail", None) or {}).get(request_id)
         if isinstance(fail, tuple) and len(fail) == 2:
@@ -16354,7 +16377,7 @@ class HumanCorePlugin(Star):
                 pass
         return None
 
-    def _charge_cache_put(self, request_id, result):
+    def _charge_cache_put(self, request_id, result, amount=None):
         if not request_id:
             return
         if not result.get("ok"):
@@ -16367,11 +16390,17 @@ class HumanCorePlugin(Star):
                 for key in list(fail)[:50]:
                     fail.pop(key, None)
             return
+        payload = dict(result)
+        try:
+            if amount is not None:
+                payload["_amount"] = round(float(amount), 2)
+        except (TypeError, ValueError):
+            pass
         cache = getattr(self, "_charge_cache", None)
         if cache is None:
             cache = {}
             self._charge_cache = cache
-        cache[request_id] = dict(result)
+        cache[request_id] = dict(payload)
         if len(cache) > 200:
             for key in list(cache)[:50]:
                 cache.pop(key, None)
@@ -16379,7 +16408,7 @@ class HumanCorePlugin(Star):
             stored = self.db.kv_get("charge_ok", {}) or {}
             if not isinstance(stored, dict):
                 stored = {}
-            stored[request_id] = dict(result, ts=time.time())
+            stored[request_id] = dict(payload, ts=time.time())
             if len(stored) > self.CHARGE_OK_KEEP:
                 oldest = sorted(stored, key=lambda k: to_float((stored.get(k) or {}).get("ts"), 0))
                 for key in oldest[: max(1, len(stored) - self.CHARGE_OK_KEEP)]:
@@ -16407,7 +16436,7 @@ class HumanCorePlugin(Star):
         if value > self.CHARGE_MAX:
             return {"ok": False, "code": "over_limit", "reason": "超过单笔上限",
                     "balance": self.balance()}
-        cached = self._charge_cache_get(rid)
+        cached = self._charge_cache_get(rid, amount=value)
         if cached is not None:
             cached["repeated"] = True
             return cached
@@ -16434,7 +16463,7 @@ class HumanCorePlugin(Star):
         result.setdefault("code", "ok" if result.get("ok") else "failed")
         result.setdefault("transaction_id", rid or ("amo" + uuid.uuid4().hex[:10]))
         self._sync_finance()
-        self._charge_cache_put(rid, result)
+        self._charge_cache_put(rid, result, amount=value)
         if not result.get("repeated"):
             await self._record_expense(value, reason, detail, source, result, uid)
         return result
