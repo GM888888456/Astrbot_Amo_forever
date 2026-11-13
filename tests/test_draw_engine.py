@@ -98,9 +98,10 @@ class FakePlugin:
         self.image_prompts = []
         self.image_fail = False
 
-    async def _image_bytes(self, prompt, umo="", uid=""):
+    async def _image_bytes(self, prompt, umo="", uid="", selfie=None):
         """生图插件替身：终端只拿字节，出图/额度都在插件那边。"""
         self.image_prompts.append(prompt)
+        self.image_selfie = selfie
         if self.image_fail:
             return None
         return b"\x89PNG"
@@ -476,7 +477,7 @@ class FallbackTests(unittest.TestCase):
         plugin.context.omni = None
         prompts = []
 
-        async def fake_bytes(prompt, umo="", uid=""):
+        async def fake_bytes(prompt, umo="", uid="", selfie=None):
             prompts.append(prompt)
             return b"\x89PNG"
 

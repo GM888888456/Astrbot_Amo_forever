@@ -529,7 +529,8 @@ class DrawEngine:
         reply_text = str(reply_text or "").strip()
         if not text:
             return self._skip("空消息")
-        selfie = "自拍" in text
+        # 「拍张照/拍照给我/发张照片」都是在要她的照片，默认自拍（别退化成他拍）
+        selfie = ("自拍" in text) or self._is_photo_ask(text)
         mode = self._mode()
         lowered = text.lower()
         explicit_hit = mode in ("explicit", "both") and any(
@@ -740,6 +741,7 @@ class DrawEngine:
                 prompt,
                 str(getattr(event, "unified_msg_origin", "") or ""),
                 str(self.plugin._canonical_uid(event) or ""),
+                selfie=selfie,
             )
         if not data:
             self._last_error = "生图插件没出图（Astrbot_Amo_Image）"

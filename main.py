@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.7.1"
+PLUGIN_VERSION = "8.7.2"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -527,12 +527,12 @@ def _strip_voice_tags(text: str) -> str:
         attr = m.group(1) or ""
         am = re.search(r'text\s*=\s*"([^"]*)"', attr) or re.search(r"text\s*=\s*'([^']*)'", attr)
         if am and am.group(1).strip():
-            return am.group(1).strip()
+            return strip_pseudo_tags(am.group(1).strip())
         tail = body[m.end():]
         close = re.search(r"</(?:astrbot_speak|amo_speak)>", tail, re.I)
         if close:
-            return tail[: close.start()].strip()
-    return _VOICE_TAG_RE.sub("", body).strip()
+            return strip_pseudo_tags(tail[: close.start()].strip())
+    return strip_pseudo_tags(_VOICE_TAG_RE.sub("", body))
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -1057,11 +1057,28 @@ def strip_chat_format(text):
     return value.strip()
 
 
+_PSEUDO_BLOCK_RE = re.compile(r"<astrbot_execute_python>.*?</astrbot_execute_python>", re.S | re.I)
+_PSEUDO_TAG_RE = re.compile(r"</?(?:astrbot|amo)_[a-z_]+[^>]*>|</?text\b[^>]*>", re.I)
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.S)
+
+
+def strip_pseudo_tags(text):
+    """把框架控制标签从正文里剥掉。
+
+    模型偶尔把 `<astrbot_execute_python>` 这类标签当正文输出，直接发出去就是
+    「群里爆代码」。整块剥干净，代码围栏也一起删。
+    """
+    body = _PSEUDO_BLOCK_RE.sub("", str(text or ""))
+    body = _PSEUDO_TAG_RE.sub("", body)
+    body = _CODE_FENCE_RE.sub("", body)
+    return body.strip()
+
+
 def clean_reply(text, limit=300):
     if not text:
         return ""
     text = strip_chat_format(str(text).strip())
-    text = re.sub(r"```.*?```", "", text, flags=re.S)
+    text = strip_pseudo_tags(text)
     text = re.sub(r"^(?:Amo|amo|核心|我|助手|assistant|AI|机器人)\s*[:：]\s*", "", text)
     if len(text) >= 2 and text[0] in "\"'“‘" and text[-1] in "\"'”’":
         text = text[1:-1]
@@ -3575,6 +3592,7 @@ class HumanState:
             if until is not None:
                 kwargs["until_hour"] = until
             merged = _city_travel_events(city, from_hour, **kwargs) or merged
+        self._bill_trip(trip, day)
         if merged:
             merged = self._hourly_schedule(merged)
             self.schedule[day] = merged
@@ -3584,6 +3602,72 @@ class HumanState:
                 city, "%02d:00" % int(trip.get("return_hour") or 22)))
             return merged
         return items
+
+    #: 旅游花费的量级（人民币）：门票 + 交通 + 吃饭，一天一次，按城市/日期固定
+    TRAVEL_COST_RANGE = {"ticket": (60, 220), "traffic": (40, 240), "meal": (60, 180)}
+
+    def _trip_cost(self, city, day):
+        """今天出去玩大概花多少：确定性随机，同一天同一城只有一个数。"""
+        chooser = random.Random("amo-travel:%s:%s" % (day, city))
+        total = 0
+        for low, high in self.TRAVEL_COST_RANGE.values():
+            total += chooser.randint(low, high)
+        return float(total)
+
+    def _bill_trip(self, trip, day=None):
+        """出去旅游要花钱：走 `charge()` → 金融账本 → 写进记忆。
+
+        一天一次，幂等号 `travel:<日期>:<城市>`；扣成功才记账，失败下次再来，
+        不阻塞聊天（后台任务）。
+        """
+        day = str(day or today_str())
+        city = str((trip or {}).get("city") or "").strip()
+        if not city:
+            return
+        rid = "travel:%s:%s" % (day, city)
+        try:
+            if self.db.kv_get("travel_billed:" + rid, ""):
+                return
+        except Exception:
+            pass
+        cost = self._trip_cost(city, day)
+        detail = "去%s玩：门票、交通、吃饭" % city
+        charge = getattr(self.p, "charge", None)
+        if not callable(charge):
+            return
+        try:
+            coro = self._bill_trip_once(rid, cost, city, detail)
+        except Exception as exc:
+            logger.debug("[amo] 旅游记账准备失败: %s" % exc)
+            return
+        spawn = getattr(self.p, "_spawn", None)
+        try:
+            if callable(spawn):
+                spawn(coro)
+            else:
+                coro.close()
+        except Exception as exc:
+            logger.debug("[amo] 旅游记账任务起不来: %s" % exc)
+
+    async def _bill_trip_once(self, rid, cost, city, detail):
+        try:
+            result = await self.p.charge(
+                cost, reason="旅游", payee=city, request_id=rid,
+                source="travel", detail=detail,
+            )
+        except Exception as exc:
+            logger.warning("[amo] 旅游记账失败: %s" % exc)
+            return
+        if isinstance(result, dict) and result.get("ok"):
+            try:
+                self.db.kv_set("travel_billed:" + rid, True)
+            except Exception:
+                pass
+            logger.info("[amo] 旅游记账：%s ¥%.2f（余额 ¥%s）" % (
+                city, float(cost), result.get("balance")))
+        elif isinstance(result, dict):
+            logger.info("[amo] 旅游记账没扣成：%s（%s）" % (
+                city, result.get("reason") or result.get("code") or ""))
 
     @staticmethod
     def _schedule_has_city(items, city):
@@ -4474,14 +4558,15 @@ class HumanState:
             ),
             "天气：%s。" % snap["weather_text"],
         ]
-        if with_activity:
-            # 只有被问到「你在干嘛/在哪」时才给活动，避免她张口就报行程
-            outfit = str(activity.get("outfit") or "").strip()
-            lines.append(
-                "（内在状态，仅供自洽，不是话题）你此刻在%s（%s）%s。"
-                % (activity.get("activity", "休息"), activity.get("place", "家"),
-                   ("，穿着" + outfit) if outfit else "")
-            )
+        # 地点永远给：不给的话模型会自己编一个（踩过坑：日程在景区，她说在酒店）。
+        # 只让她在被问/需要时用，并明令不许改口。
+        outfit = str(activity.get("outfit") or "").strip()
+        lines.append(
+            "（内在状态，仅供自洽，不是话题，被问才说）你此刻在%s（%s）%s。"
+            "地点和正在做的事只能按这一条说，不许说成别处、也不许临时改口。"
+            % (activity.get("activity", "休息"), activity.get("place", "家"),
+               ("，穿着" + outfit) if outfit else "")
+        )
         return "\n".join(lines)
 
     def tone_text(self, snap=None, relation="普通"):
@@ -11737,7 +11822,9 @@ class HumanCorePlugin(Star):
                 # 只输出 <astrbot_speak ...> 伪标签，清空 chain 会让整条回复消失。
                 spoken_text = _strip_voice_tags(text)
                 if not spoken_text:
-                    logger.warning("[amo] 只发语音但没拿到可念的文字，按普通回复发出")
+                    logger.info("[amo] 本轮只发语音，正文只有控制标签，整条不发")
+                    result.chain = []
+                    return
                 else:
                     try:
                         event.amo_voice_text = spoken_text
@@ -16738,7 +16825,7 @@ class HumanCorePlugin(Star):
         parts.extend(["自然光", "手机前置摄像头", "生活感"])
         return "，".join(parts)
 
-    async def _image_bytes(self, prompt, umo="", uid=""):
+    async def _image_bytes(self, prompt, umo="", uid="", selfie=None):
         """出图兜底入口：让生图插件（Astrbot_Amo_Image）直接吐图片字节。
 
         画图/照片引擎原先只认万象画卷（OmniDraw），机器上没装就一张都出不来；
@@ -16751,9 +16838,16 @@ class HumanCorePlugin(Star):
         if not prompt:
             return None
         try:
-            return await asyncio.wait_for(
-                plugin.draw_for(str(umo or ""), str(uid or ""), prompt), timeout=180
-            )
+            try:
+                return await asyncio.wait_for(
+                    plugin.draw_for(str(umo or ""), str(uid or ""), prompt, selfie=selfie),
+                    timeout=180,
+                )
+            except TypeError:
+                # 老版本生图插件不认 selfie：退回三参数
+                return await asyncio.wait_for(
+                    plugin.draw_for(str(umo or ""), str(uid or ""), prompt), timeout=180
+                )
         except Exception as exc:
             logger.warning("[amo] 生图插件出图失败: %s" % exc)
             return None
