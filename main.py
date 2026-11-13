@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.5.4"
+PLUGIN_VERSION = "8.5.5"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -11272,15 +11272,18 @@ class HumanCorePlugin(Star):
             return "买不了，等会儿再说。"
         if not result.get("ok"):
             code = str(result.get("code") or "")
+            switched = str(result.get("switched") or "")
             if code == "no_money":
                 return "买不起：%s 要 %.1f 元，还差 %.1f 元。" % (
                     result.get("dish") or dish, float(result.get("price") or 0),
                     float(result.get("short") or 0))
+            if code == "not_home":
+                return ("在外面做不了%s，得回家或点外卖。" % (result.get("dish") or dish)
+                        + ("（%s）" % switched if switched else ""))
             if code == "need_grocery":
                 miss = "、".join(
                     "%s 缺 %.1f" % (m.get("item"), float(m.get("need") or 0) - float(m.get("have") or 0))
                     for m in (result.get("missing") or []))
-                switched = str(result.get("switched") or "")
                 return (((switched + "；") if switched else "")
                         + "家里没食材，做不了：%s。要先去买（method=grocery）。" % miss)
             return "没成：%s" % (result.get("reason") or "不知道怎么了")
@@ -15889,7 +15892,10 @@ class HumanCorePlugin(Star):
         if plugin is None:
             return
         try:
-            snap = plugin.snapshot()
+            try:
+                snap = plugin.snapshot(refresh=False)
+            except TypeError:
+                snap = plugin.snapshot()
             if isinstance(snap, dict):
                 self.state.finance = {
                     "balance": snap.get("balance", 0),
@@ -16259,7 +16265,10 @@ class HumanCorePlugin(Star):
         if not callable(reader):
             return
         try:
-            signal = reader()
+            try:
+                signal = reader(refresh=False)
+            except TypeError:
+                signal = reader()
         except Exception as exc:
             logger.debug("[amo] 读投资盈亏失败: %s" % exc)
             return

@@ -1,5 +1,10 @@
 # Changelog
 
+## 8.5.5（同步金融不阻塞 + 吃饭 not_home 反馈）
+
+- `_sync_finance` 用 `snapshot(refresh=False)`、`_sync_market_mood` 用 `mood_signal(refresh=False)`，不在 async 路径拉行情。
+- `amo_eat` 增加 `not_home` 反馈：在外面做不了这道菜，回家或点外卖。
+
 ## 8.5.4（自动还款会在私聊说一声 + 吃饭默认 auto）
 
 - 金融自动还款后，Amo 后台在私聊发一句「我刚还你 X 啦，还欠 Y」，不再只在账本里静默扣；手动 `amo_repay` 不会重复通知。
