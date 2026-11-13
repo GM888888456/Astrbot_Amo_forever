@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.4"
+PLUGIN_VERSION = "9.0.5"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -12345,6 +12345,10 @@ class HumanCorePlugin(Star):
             tail.append("余额 %.0f 元" % float(result.get("balance") or 0))
         switched = str(result.get("switched") or "")
         note = ("（%s）" % switched) if switched else ""
+        try:
+            self.feel(FeelEvent.MEAL)
+        except Exception:
+            pass
         return head + ("（" + "，".join(tail) + "）" if tail else "") + note + "。"
 
     @filter.llm_tool(name="amo_repay")
@@ -17326,6 +17330,18 @@ class HumanCorePlugin(Star):
         except Exception as exc:
             logger.debug("[amo] 推送房车失败: %s" % exc)
             return
+        city = ""
+        try:
+            profile_city = (getattr(self.state, "schedule_profile", {}) or {}).get("city")
+            city = str(profile_city or "").strip()
+        except Exception:
+            city = ""
+        city_setter = getattr(plugin, "set_persona_city", None)
+        if city and callable(city_setter):
+            try:
+                await asyncio.to_thread(city_setter, city)
+            except Exception as exc:
+                logger.debug("[amo] 推送城市失败: %s" % exc)
         if isinstance(result, dict) and result.get("changed"):
             logger.info("[amo] 从人格读到房车，已交给金融：%s｜%s" % (house or "-", car or "-"))
 

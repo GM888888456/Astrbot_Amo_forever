@@ -5,12 +5,6 @@
     "default": "Asia/Shanghai",
     "hint": "问候时段、日记、天气、「现在几点」都按这个时区算。服务器跑在 UTC 时务必保持 Asia/Shanghai，否则会把早上算成凌晨（会出现「大晚上的」这类错话）。填 auto 表示跟随系统。"
   },
-  "weather_city_name": {
-    "type": "string",
-    "description": "城市显示名",
-    "default": "",
-    "hint": "天气里显示的城市名；填数字 ID 时用它显示中文（填 101281601、这里填东莞）。用中文城市名设置时会自动填好。"
-  },
   "city_follow_enabled": {
     "type": "bool",
     "description": "他换城市时她跟着换（只认「我在X / 我到X / 我回X」）",
@@ -79,12 +73,6 @@
     "type": "string",
     "description": "和风天气 Key",
     "hint": "留空则使用本地模拟天气；在 console.qweather.com 申请",
-    "default": ""
-  },
-  "weather_city": {
-    "type": "string",
-    "description": "天气城市",
-    "hint": "可直接填中文城市名（如：东莞、北京朝阳），保存后会自动换算成 LocationID 回填；也可直接填数字 ID。留空则跟随日程城市。",
     "default": ""
   },
   "weather_host": {
@@ -1071,36 +1059,6 @@
     "hint": "留空则读环境变量 DEEPSEEK_API_KEY / COMPANION_V2_BALANCE_API_KEY。只用于查余额，不会写日志。",
     "default": ""
   },
-  "usage_price_hit_peak": {
-    "type": "float",
-    "description": "缓存命中输入单价（高峰，元/百万 token）",
-    "default": 0.04
-  },
-  "usage_price_hit_idle": {
-    "type": "float",
-    "description": "缓存命中输入单价（空闲，元/百万 token）",
-    "default": 0.02
-  },
-  "usage_price_miss_peak": {
-    "type": "float",
-    "description": "缓存未命中输入单价（高峰）",
-    "default": 2
-  },
-  "usage_price_miss_idle": {
-    "type": "float",
-    "description": "缓存未命中输入单价（空闲）",
-    "default": 1
-  },
-  "usage_price_out_peak": {
-    "type": "float",
-    "description": "输出单价（高峰）",
-    "default": 8
-  },
-  "usage_price_out_idle": {
-    "type": "float",
-    "description": "输出单价（空闲）",
-    "default": 4
-  },
   "uid_merge_enabled": {
     "type": "bool",
     "description": "跨平台账号合并（飞书/QQ 认成同一个人）",
@@ -1124,30 +1082,6 @@
     "description": "主动消息选边窗口（分钟）",
     "hint": "最近这么多分钟内在哪个平台说过话就发哪边，默认 30。",
     "default": 30
-  },
-  "schedule_city": {
-    "type": "string",
-    "description": "日程所在城市",
-    "hint": "留空则优先从人格提示词/世界观获取城市；都没有时自动随机生成。",
-    "default": ""
-  },
-  "schedule_home": {
-    "type": "string",
-    "description": "角色住址",
-    "hint": "留空则从人格提示词提取住址；没有就按城市自动生成（如 观山湖区·小窝）。",
-    "default": ""
-  },
-  "schedule_workplace": {
-    "type": "string",
-    "description": "角色公司",
-    "hint": "留空则从人格提示词/世界观提取公司；没有就自动生成。",
-    "default": ""
-  },
-  "schedule_car": {
-    "type": "string",
-    "description": "角色资产",
-    "hint": "车/房/奢侈品都能写（可留空）：留空就从人格提示词里提取，没有就自动随机一辆车；送礼系统收到的大件也会自动替换这里。",
-    "default": ""
   },
   "outfit_enable": {
     "type": "bool",

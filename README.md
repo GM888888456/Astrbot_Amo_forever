@@ -6,6 +6,12 @@
 
 > 使用手册见 [wiki/](wiki/)：安装、金融、医疗、记忆与遗忘、相片一致性、常见问题。
 
+## 9.0.5（模块三：手填配置下线，人格自动提取）
+
+- 配置表删掉 12 个手填键：`schedule_city`（角色城市）、`schedule_home`（住址）、`schedule_workplace`（公司）、`schedule_car`（角色资产）、6 个 `usage_price_*`（单价）以及 `weather_city`/`weather_city_name`。城市/住址/公司/车全部改由人格解析（`schedule_profile`），单价用内置官方价格表。
+- 吃饭（`amo_eat`）成功 → `MEAL` 事件：饥饱、舌欲、心情一起变。
+- 人格城市也推给金融（`set_persona_city`），房车与房租按人格城市重算。
+
 ## 9.0.4（事件总线：挂载只发事件，心流只读数）
 
 - 新增 `emit_event(name, payload)`：挂载插件唯一的入口，只传事件名和 `severity`（0–10），加减全在 `heartflow.py`。
