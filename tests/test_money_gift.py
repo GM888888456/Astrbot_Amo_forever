@@ -65,7 +65,7 @@ class ParseTests(unittest.TestCase):
     def test_borrow_line_when_broke(self):
         obj = build()
         obj._finance = lambda: type("F", (), {"borrow_info": lambda self: {"owed": 300.0}})()
-        line = obj._borrow_line()
+        line = obj._borrow_line(can_ask=True)
         self.assertIn("没钱", line)
         self.assertIn("红包", line)
         self.assertIn("300", line)
@@ -73,7 +73,7 @@ class ParseTests(unittest.TestCase):
     def test_no_borrow_line_when_has_cash(self):
         obj = build()
         obj.state.finance = {"balance": 5000}
-        self.assertEqual(obj._borrow_line(), "")
+        self.assertEqual(obj._borrow_line(can_ask=True), "")
 
 
 class GiftLineTests(unittest.TestCase):

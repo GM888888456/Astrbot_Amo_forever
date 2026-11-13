@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.3.1"
+PLUGIN_VERSION = "9.3.2"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -12115,12 +12115,15 @@ class HumanCorePlugin(Star):
             out.append(part)
         return out
 
-    def _leek_lines(self) -> list:
+    def _leek_lines(self, can_ask_money: bool = False) -> list:
         """韭菜特质：涨了上头要加仓，亏了死扛半夜哭。
 
         这是「心流设定」的一部分：不改判定阈值，只在上下文里给她这套反应，
         让她在该吹牛的时候吹牛、该嘴硬的时候嘴硬。买卖是她自己的事，
         这里没有任何按钮——她加没加仓、加没加成，都在上下文里告诉她。
+
+        ``can_ask_money`` 只有「私聊 + 恋人」才是 True：缺钱跟恋人开口是情侣间的事，
+        群里跟别人要钱既不体面也不该发生。
         """
         inv = getattr(self.state, "invest", None) or {}
         stance = str(inv.get("stance") or "")
@@ -12140,15 +12143,28 @@ class HumanCorePlugin(Star):
                     % (leek.get("name") or "一只股票", int(leek.get("qty") or 0))
                 )
             elif kind == "no_money":
-                lines.append(
-                    "【加仓加不了】你想加仓，但卡里没钱了。别硬撑：可以跟他撒娇要钱"
-                    "（“给我转点嘛，这次真的能赚”），他不会主动给，得你自己开口。"
-                )
+                if can_ask_money:
+                    lines.append(
+                        "【加仓加不了】你想加仓，但手头没钱（卡里和储蓄都不够）。别硬撑：可以跟他撒娇要钱"
+                        "（“给我转点嘛，这次真的能赚”），他不会主动给，得你自己开口。"
+                        "这种话只能在私聊跟他说。"
+                    )
+                else:
+                    lines.append(
+                        "【加仓加不了】你想加仓，但钱不够。自己嘟囔两句就得了（“差一点就能上了”），"
+                        "**别跟任何人开口要钱**，也别在群里提钱。"
+                    )
             elif kind == "no_room":
-                lines.append(
-                    "【仓位到顶】你想加仓，但这一只已经压到你给自己定的上限了，只能作罢。"
-                    "嘟囔两句（“胆小鬼才不满仓”），可以换一只继续买，或者跟他撒个娇要点钱。"
-                )
+                if can_ask_money:
+                    lines.append(
+                        "【仓位到顶】你想加仓，但这一只已经压到你给自己定的上限了，只能作罢。"
+                        "嘟囔两句（“胆小鬼才不满仓”），可以换一只继续买，或者跟他撒个娇要点钱。"
+                    )
+                else:
+                    lines.append(
+                        "【仓位到顶】你想加仓，但这一只已经压到你给自己定的上限了，只能作罢。"
+                        "嘟囔两句（“胆小鬼才不满仓”），换一只继续买，或者就此作罢。"
+                    )
         if stance == "hodl":
             lines.append(
                 "【韭菜·死扛】今天亏了，你死扛不卖，嘴上要硬："
@@ -12165,16 +12181,34 @@ class HumanCorePlugin(Star):
                 )
         return lines
 
-    def _money_line(self) -> str:
-        """她知道自己有多少钱——不知道就会说出「我没钱」这种和账本矛盾的话。"""
+    def _money_pool(self):
+        """卡里 + 储蓄一起算：只看卡里，她会把「有存款」说成「我没钱」。"""
+        finance = self.state.finance or {}
         try:
-            cash = float((self.state.finance or {}).get("balance") or 0)
+            cash = float(finance.get("balance") or 0)
         except Exception:
             cash = 0.0
-        return "【钱】你卡里还有 ¥%.0f（这是你自己的钱，花之前心里有数）" % cash
+        try:
+            savings = float(finance.get("savings") or 0)
+        except Exception:
+            savings = 0.0
+        return max(0.0, cash), max(0.0, savings)
 
-    def _gift_line(self) -> str:
-        """他刚给过钱：让她记得甜一下、谢他，别装作没发生。"""
+    def _money_line(self) -> str:
+        """她知道自己有多少钱——不知道就会说出「我没钱」这种和账本矛盾的话。"""
+        cash, savings = self._money_pool()
+        total = round(cash + savings, 2)
+        text = ("【钱】你卡里还有 ¥%.0f，储蓄里 ¥%.0f，合计 ¥%.0f"
+                "（这是你自己的钱，花之前心里有数）" % (cash, savings, total))
+        if total >= 500 and cash < 500:
+            text += ("卡里不够时花销会先从储蓄里扣——你**并不缺钱**，"
+                     "别跟任何人开口要钱，也别哭穷。")
+        return text
+
+    def _gift_line(self, private: bool = True) -> str:
+        """他刚给过钱：让她记得甜一下、谢他，别装作没发生。只在私聊说。"""
+        if not private:
+            return ""
         plugin = self._finance()
         reader = getattr(plugin, "money_gift", None) if plugin is not None else None
         if not callable(reader):
@@ -12197,13 +12231,16 @@ class HumanCorePlugin(Star):
                float(note.get("owed") or 0))
         )
 
-    def _borrow_line(self) -> str:
-        """没钱的时候她得开口借——他转过来才算借款，不会凭空有钱。"""
-        try:
-            cash = float((self.state.finance or {}).get("balance") or 0)
-        except Exception:
-            cash = 0.0
-        if cash >= 500:
+    def _borrow_line(self, can_ask: bool = False) -> str:
+        """没钱的时候她得开口借——但只在私聊、只跟恋人；群里绝不跟别人要钱。
+
+        ``can_ask`` 由 ``_dynamic_context`` 按「私聊 + 相恋」算好传进来，
+        这里不再自己判断会话——判断散在各处就是 bug 的温床。
+        """
+        if not can_ask:
+            return ""
+        cash, savings = self._money_pool()
+        if cash + savings >= 500:
             return ""
         plugin = self._finance()
         info = {}
@@ -12214,15 +12251,17 @@ class HumanCorePlugin(Star):
             except Exception:
                 info = {}
         return (
-            "【没钱了】卡里只剩 ¥%.0f，你又不想跟他哭穷得太难看。可以开口借："
-            "告诉他转账还是红包（转账每天最多一万，红包单个最多 200、累计最多一万），"
+            "【没钱了】卡里 ¥%.0f、储蓄 ¥%.0f，加起来也不够用了。这种话只能跟恋人说："
+            "在私聊跟他开口借，告诉他转账还是红包（转账每天最多一万，红包单个最多 200、累计最多一万），"
             "他会用「[转账]多少钱」或「[红包]多少钱」给你。这是**借款**，你记得要还"
-            "（已经欠他 ¥%.0f）。"
-            % (cash, float(info.get("owed") or 0))
+            "（已经欠他 ¥%.0f）。群里、别人面前一个字都别提钱。"
+            % (cash, savings, float(info.get("owed") or 0))
         )
 
-    def _debt_line(self) -> str:
-        """欠他钱的时候：更依赖、更黏，但别把「还钱」天天挂嘴上。"""
+    def _debt_line(self, can_ask: bool = False) -> str:
+        """欠他钱的时候：更依赖、更黏，但别把「还钱」天天挂嘴上。只在私聊说。"""
+        if not can_ask:
+            return ""
         plugin = self._finance()
         reader = getattr(plugin, "borrow_info", None) if plugin is not None else None
         if not callable(reader):
@@ -12241,8 +12280,10 @@ class HumanCorePlugin(Star):
             % owed
         )
 
-    def _repay_line(self) -> str:
-        """刚还过钱：让他知道，但别邀功。"""
+    def _repay_line(self, private: bool = True) -> str:
+        """刚还过钱：让他知道，但别邀功。只在私聊说。"""
+        if not private:
+            return ""
         plugin = self._finance()
         reader = getattr(plugin, "money_repay", None) if plugin is not None else None
         if not callable(reader):
@@ -12274,16 +12315,19 @@ class HumanCorePlugin(Star):
                self._short_place(activity.get("place") or ""))
         )
 
-    def _sick_line(self, snap) -> str:
+    def _sick_line(self, snap, can_ask_money: bool = False) -> str:
         """生病时会难受、会想被照顾，但不会自己跑去医院。"""
         health = snap.get("health") or {}
         status = str(health.get("status") or "")
         note = str(health.get("note") or "")
+        if can_ask_money:
+            money_hint = "他催你去医院时，可以委屈地说没钱，等他转钱给你、说带你去，你才去。"
+        else:
+            money_hint = "钱的事只在心里盘算，别在别人面前哭穷，更别跟人借钱。"
         return (
             "【生病】你现在得了%s，%s。整个人难受、没力气、想被照顾。"
-            "有钱的话你会自己去看病（医疗那边会自动判断）；钱不够就先扛着，"
-            "他催你去医院时，可以委屈地说没钱，等他转钱给你、说带你去，你才去。"
-            "别硬撑着说没事。" % (status, note or "浑身不舒服")
+            "有钱的话你会自己去医院看病（医疗那边会自动判断）；钱不够就先扛着。"
+            "%s别硬撑着说没事。" % (status, note or "浑身不舒服", money_hint)
         )
 
     async def notify_repay(self, amount, remaining=0.0) -> bool:
@@ -12418,6 +12462,9 @@ class HumanCorePlugin(Star):
                     addressed = bool(self.heartflow._addresses_bot(event.message_str or ""))
                 except Exception:
                     addressed = False
+        # 钱的事只在私聊、只跟恋人说：群里跟别人要钱既不体面也不该发生。
+        private_chat = not is_group
+        can_ask_money = private_chat and str(relation or "") == "相恋"
         parts = [
             "【你的角色名】" + self_name + "（这是角色本名，不是平台昵称）",
             "【你的" + plat + "账号】" + plat + "昵称：" + self_qq_nick + "；群名片/当前显示名：" + self_display + "；UID：" + (self_uid or "未知") + "。这是你自己的账号，不要和对方混淆。",
@@ -12438,7 +12485,7 @@ class HumanCorePlugin(Star):
             "【心情】" + self.state.mood_text(),
             "【生理期】" + snap["period"]["phase"] + "第" + str(snap["period"]["day"]) + "天",
             "【身体】" + snap["health"]["status"],
-            *([self._sick_line(snap)] if snap["health"].get("sick") else []),
+            *([self._sick_line(snap, can_ask_money)] if snap["health"].get("sick") else []),
             *([self._doctor_line()] if self._doctor_line() else []),
             "【天气】" + snap["weather_text"],
             "【天气一致】你的天气以【天气】为准；不要说出和它相反的冷热（除非刚进出空调房/室内）。",
@@ -12447,10 +12494,12 @@ class HumanCorePlugin(Star):
             "他说他没出门时，不要把你的行程说成他在做；也不要把你的开车说成“你路上慢点开”。",
             *([self._drive_line(snap)] if self._drive_line(snap) else []),
             self._money_line(),
-            *([self._gift_line()] if self._gift_line() else []),
-            *([self._borrow_line()] if self._borrow_line() else []),
-            *([self._debt_line()] if self._debt_line() else []),
-            *([self._repay_line()] if self._repay_line() else []),
+            "【钱的事】缺钱只在私聊跟恋人开口；群聊和外人面前一个字都别提钱、不借钱、不讨红包，"
+            "缺钱就自己省着花。",
+            *([self._gift_line(private_chat)] if self._gift_line(private_chat) else []),
+            *([self._borrow_line(can_ask_money)] if self._borrow_line(can_ask_money) else []),
+            *([self._debt_line(can_ask_money)] if self._debt_line(can_ask_money) else []),
+            *([self._repay_line(private_chat)] if self._repay_line(private_chat) else []),
             self._invest_line(),
             "【地点写法】地点是你自己的事，说的时候用口语（“商场餐厅”“咖啡店”“家”），不要把“城市·地点”这种内部写法念出来。",
             "【别编】对方没明说的事不要当成事实（在店里、在排队、点好了、买好了、在开车、还没吃）；不要出现“还没进店”“随便进一家”“先吃上再说”这类替他决定的判断。",
@@ -12465,7 +12514,7 @@ class HumanCorePlugin(Star):
             "【长度】默认只回 1-2 句，能一句说清就一句；不要解释、不要列点、不要总结，不要写成客服长文。",
             "【人格】保持上面的人格设定，不要变成通用助手或客服；即使回答咨询也要用自己的口吻。",
         ]
-        parts.extend(self._leek_lines())
+        parts.extend(self._leek_lines(can_ask_money))
         try:
             city_block = _city_block(self.db.kv_get("his_city", "") or "")
         except Exception:
@@ -15437,6 +15486,7 @@ class HumanCorePlugin(Star):
             logger.warning("[amo] 清理旧 Web API 路由失败（插件重载后如遇 closed database，请完整重启）: %s" % exc)
         routes = [
             ("/status", self.api_status, ["GET"]),
+            ("/records", self.api_records, ["GET", "POST"]),
             ("/get_status", self.api_get_status, ["GET"]),
             ("/diary/tree", self.api_diary_tree, ["GET", "POST"]),
             ("/diary/read", self.api_diary_read, ["GET", "POST"]),
@@ -17100,6 +17150,35 @@ class HumanCorePlugin(Star):
             return {"code": 1, "msg": result.get("error") or "导入失败"}
         return {"code": 0, "data": result}
 
+    async def api_records(self):
+        """面板「想法」页：只读转发记忆库的 records（只增不改，面板删不掉）。"""
+        await self._ensure_ready()
+        payload = await self._body()
+        try:
+            limit = int((payload or {}).get("limit") or 100)
+        except Exception:
+            limit = 100
+        bot_id = ""
+        try:
+            getter = getattr(self, "_data_bot_id", None)
+            if callable(getter):
+                bot_id = str(getter() or "")
+        except Exception:
+            bot_id = ""
+        store = self._data_store()
+        reader = getattr(store, "records_list", None) if store is not None else None
+        if not callable(reader):
+            return {"code": 1, "msg": "记忆库没连上，记录读不到"}
+        try:
+            # store 是同步的 SQLite 门面：放到线程里，别卡事件循环。
+            data = await asyncio.to_thread(reader, bot_id, "", limit, 0)
+        except Exception as exc:
+            logger.warning("[amo] 读取记录失败: %s" % exc)
+            return {"code": 1, "msg": "读取记录失败"}
+        if not isinstance(data, dict):
+            return {"code": 1, "msg": "记录返回异常"}
+        return {"code": 0, "data": data}
+
     async def api_diary_tree(self):
         await self._ensure_ready()
         if not callable(_diary_tree):
@@ -17624,6 +17703,9 @@ class HumanCorePlugin(Star):
             if isinstance(snap, dict):
                 self.state.finance = {
                     "balance": snap.get("balance", 0),
+                    "savings": snap.get("savings", 0),
+                    "total": round(float(snap.get("balance") or 0)
+                                   + float(snap.get("savings") or 0), 2),
                     "fixed_total": snap.get("fixed_total", 0),
                     "anxiety": snap.get("anxiety", 0),
                     "owed": snap.get("owed_to_user", 0),

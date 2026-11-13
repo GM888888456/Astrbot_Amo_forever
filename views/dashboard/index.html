@@ -152,6 +152,13 @@
     .form-grid label, .block { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); min-width: 0; }
     .block { margin: 10px 0; }
     .schedule-groups { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+    .thought-list { margin-top: 6px; }
+    .thought-row { padding: 10px 2px; border-bottom: 1px solid var(--line); }
+    .thought-row:last-child { border-bottom: 0; padding-bottom: 2px; }
+    .thought-head { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+    .thought-title { min-width: 0; word-break: break-word; }
+    .thought-time { color: var(--muted); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .thought-sub { color: var(--muted); font-size: 11.5px; margin-top: 3px; line-height: 1.6; word-break: break-word; }
     .schedule-group { border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 0 12px; }
     .schedule-group > summary { display: flex; gap: 8px; align-items: baseline; padding: 11px 0; cursor: pointer; font-size: 13px; font-weight: 600; list-style: none; border-bottom: 1px solid var(--line); }
     .schedule-group > summary::-webkit-details-marker { display: none; }
@@ -405,7 +412,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="status">状态</button>
       <button class="tab" data-tab="world">世界</button>
-      <button class="tab" data-tab="schedule">日程</button>
+      <button class="tab" data-tab="thoughts">想法</button>
       <button class="tab" data-tab="actions">操作</button>
       <button class="tab" data-tab="profiles">用户</button>
       <button class="tab" data-tab="usage">用量</button>
@@ -471,13 +478,13 @@
       </section>
     </div>
 
-    <div id="tab-schedule" class="tab-panel" hidden>
+    <div id="tab-thoughts" class="tab-panel" hidden>
       <section class="card">
         <div class="row between">
-          <div class="label">日程一览</div>
+          <div class="label">她的想法与记录</div>
         </div>
-        <div class="sub" id="scheduleDay"></div>
-        <div id="scheduleList" class="schedule-groups"><div class="sub">加载中…</div></div>
+        <div class="sub" id="thoughtHint">加载中…</div>
+        <div id="thoughtList" class="thought-list"></div>
       </section>
     </div>
 
@@ -1108,104 +1115,65 @@
       }
     }
 
-    function renderSchedule(data) {
-      const box = document.getElementById("scheduleList");
-      const day = document.getElementById("scheduleDay");
+    const THOUGHT_KIND = { buy: "买", skip: "没买", photo: "照片", stock: "股票", note: "想法" };
+
+    function renderThoughts(data) {
+      const box = document.getElementById("thoughtList");
+      const hint = document.getElementById("thoughtHint");
+      if (!box) return;
       box.textContent = "";
-      const meta = data.meta || {};
-      currentScheduleDay = data.day || "";
-      const context = data.context || {};
-      const event = context.event || {};
-      const eventText = event.kind && event.kind !== "none" ? " · " + (event.title || "突发事件") : "";
-      day.textContent = data.day
-        ? "日期：" + data.day + (meta.label ? " · " + meta.label : "") + (meta.rest ? " · 休息日" : "") + eventText + " · 点开每小时卡片查看小日记（日程生成时已写好）"
-        : "";
-      const tree = Array.isArray(data.tree) ? data.tree : (Array.isArray(data.schedule_tree) ? data.schedule_tree : []);
-      if (!tree.length) {
-        box.textContent = "暂无日程，点“刷新”或“重生日程”。";
-        return;
+      const rows = (data && data.items) || [];
+      if (hint) {
+        hint.textContent = rows.length
+          ? "只增不改 · 按时间倒序 · 共 " + (data.total || rows.length) + " 条"
+          : "还没有记录：她买过什么、想过什么、为什么没买、为什么买或不买股票，都会记在这里。";
       }
-      tree.forEach((block) => {
-        const details = document.createElement("details");
-        details.className = "schedule-group";
-        details.open = Boolean(block.current);
-        const summary = document.createElement("summary");
+      rows.forEach((row) => {
+        const line = document.createElement("div");
+        line.className = "thought-row";
+        const head = document.createElement("div");
+        head.className = "thought-head";
+        const title = document.createElement("span");
+        title.className = "thought-title";
+        title.textContent = (THOUGHT_KIND[row.kind] || row.kind || "") + " · " + (row.title || "");
         const time = document.createElement("span");
-        time.className = "time";
-        time.textContent = (block.start || "") + "-" + (block.end || "");
-        const label = document.createElement("span");
-        label.className = "title";
-        label.textContent = block.title || block.activity || "";
-        const place = document.createElement("span");
-        place.className = "place";
-        place.textContent = block.activity && block.title && block.activity !== block.title ? " · " + block.activity : "";
-        summary.appendChild(time);
-        summary.appendChild(label);
-        summary.appendChild(place);
-        details.appendChild(summary);
-        (block.children || []).forEach((hour) => {
-          const hourBox = document.createElement("div");
-          hourBox.className = "schedule-hour" + (hour.current ? " current" : "");
-          hourBox.dataset.start = hour.start || "";
-          hourBox.tabIndex = 0;
-          hourBox.setAttribute("role", "button");
-          hourBox.setAttribute("aria-label", (hour.start || "") + "-" + (hour.end || "") + " " + (hour.activity || "") + "，点击生成小日记");
-          const line = document.createElement("div");
-          line.className = "schedule-hour-row";
-          const hourTime = document.createElement("span");
-          hourTime.className = "time";
-          hourTime.textContent = (hour.start || "") + "-" + (hour.end || "");
-          const activity = document.createElement("span");
-          activity.className = "a";
-          activity.textContent = hour.activity || "";
-          if (hour.event) {
-            const tag = document.createElement("span");
-            tag.className = "schedule-event-tag";
-            tag.textContent = eventTagText(hour.event);
-            activity.appendChild(tag);
-          }
-          const metaText = [hour.place || "", hour.vehicle ? "开车" : "", hour.current ? "现在" : ""].filter(Boolean).join(" · ");
-          const metaLine = document.createElement("span");
-          metaLine.className = "meta";
-          metaLine.textContent = metaText;
-          const chev = document.createElement("span");
-          chev.className = "chev";
-          chev.textContent = "›";
-          line.appendChild(hourTime);
-          line.appendChild(activity);
-          line.appendChild(metaLine);
-          line.appendChild(chev);
-          const wear = hour.outfit ? document.createElement("div") : null;
-          if (wear) {
-            wear.className = "schedule-hour-wear";
-            wear.textContent = "穿 " + hour.outfit;
-          }
-          const diary = document.createElement("div");
-          diary.className = "schedule-diary";
-          diary.addEventListener("click", (event) => event.stopPropagation());
-          hourBox.appendChild(line);
-          if (wear) hourBox.appendChild(wear);
-          hourBox.appendChild(diary);
-          const open = () => toggleHourDiary(hourBox, hour);
-          hourBox.addEventListener("click", open);
-          hourBox.addEventListener("keydown", (event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              open();
-            }
-          });
-          details.appendChild(hourBox);
-        });
-        box.appendChild(details);
+        time.className = "thought-time";
+        time.textContent = row.time || "";
+        head.appendChild(title);
+        head.appendChild(time);
+        line.appendChild(head);
+        if (row.detail) {
+          const detail = document.createElement("div");
+          detail.className = "thought-sub";
+          detail.textContent = row.detail;
+          line.appendChild(detail);
+        }
+        if (row.reason) {
+          const why = document.createElement("div");
+          why.className = "thought-sub";
+          why.textContent = "为什么：" + row.reason;
+          line.appendChild(why);
+        }
+        if (row.amount) {
+          const amt = document.createElement("div");
+          amt.className = "thought-sub";
+          amt.textContent = "金额：" + Number(row.amount).toFixed(2) + "¥";
+          line.appendChild(amt);
+        }
+        box.appendChild(line);
       });
     }
 
-    async function loadSchedule() {
+    async function loadThoughts() {
+      const box = document.getElementById("thoughtList");
+      const hint = document.getElementById("thoughtHint");
+      if (box) box.textContent = "加载中…";
       try {
-        const result = await call("schedule");
-        renderSchedule(objectFrom(result));
+        const result = await call("records", { limit: 200 });
+        renderThoughts(objectFrom(result));
       } catch (error) {
-        document.getElementById("scheduleList").textContent = "读取失败：" + (error.message || error);
+        if (hint) hint.textContent = "";
+        if (box) box.textContent = "读取失败：" + (error.message || error);
       }
     }
 
@@ -1238,8 +1206,6 @@
       btn.disabled = true;
       try {
         await call("schedule_regen");
-        await loadSchedule();
-        showTab("schedule");
         toast("日程已重建");
       } catch (error) {
         toast("重建失败：" + (error && error.message ? error.message : error), true);
@@ -1973,7 +1939,7 @@
         panel.hidden = panel.id !== "tab-" + name;
       });
       if (name === "world") loadWorld();
-      if (name === "schedule") loadSchedule();
+      if (name === "thoughts") loadThoughts();
       if (name === "profiles") loadProfiles();
       if (name === "diary") loadDiary();
       if (name === "usage") loadUsage();

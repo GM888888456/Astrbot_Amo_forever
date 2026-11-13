@@ -228,13 +228,13 @@ class DebtTests(unittest.TestCase):
         return obj
 
     def test_debt_line_when_owed(self):
-        text = self._plugin(owed=800.0)._debt_line()
+        text = self._plugin(owed=800.0)._debt_line(can_ask=True)
         self.assertIn("欠他", text)
         self.assertIn("amo_repay", text)
         self.assertIn("依赖", text)
 
     def test_debt_line_clear(self):
-        self.assertEqual(self._plugin(owed=0.0)._debt_line(), "")
+        self.assertEqual(self._plugin(owed=0.0)._debt_line(can_ask=True), "")
 
     def test_repay_line(self):
         text = self._plugin(repay={"amount": 500.0, "remaining": 300.0,
@@ -265,13 +265,13 @@ class LeekTests(unittest.TestCase):
 
     def test_no_money_makes_her_ask_for_a_top_up(self):
         leek = {"kind": "no_money"}
-        lines = " ".join(self._plugin("overconfident", leek)._leek_lines())
+        lines = " ".join(self._plugin("overconfident", leek)._leek_lines(can_ask_money=True))
         self.assertIn("没钱", lines)
         self.assertIn("转点", lines)
 
     def test_no_room_sulks_and_can_ask_for_money(self):
         leek = {"kind": "no_room"}
-        lines = " ".join(self._plugin("overconfident", leek)._leek_lines())
+        lines = " ".join(self._plugin("overconfident", leek)._leek_lines(can_ask_money=True))
         self.assertIn("仓位到顶", lines)
         self.assertIn("换一只继续买", lines)
 
