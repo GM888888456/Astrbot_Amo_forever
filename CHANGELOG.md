@@ -1,5 +1,9 @@
 # Changelog
 
+## 9.1.5（照片记录不再静默失败）
+
+- 线上核对：`memories` 里 `photo_record` 一条都没有，说明 `_remember_photo` 一直被拦、只打了 debug。现在写不进去会 **降级成 `event`（前缀【照片】）**，并打 info；两边都失败才 warning。
+
 ## 9.1.4（日程读写统一清洗「他」）
 
 - `_strip_his_presence` 之前只在部分生成路径调用，状态同步/面板写库会绕过它，所以日程里还能看到「他」。现在所有 `kv_set("schedule")` 与启动加载都过 `_sanitize_schedule`。

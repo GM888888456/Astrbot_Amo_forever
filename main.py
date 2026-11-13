@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.1.4"
+PLUGIN_VERSION = "9.1.5"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -9191,9 +9191,15 @@ class HumanCorePlugin(Star):
         except Exception:
             pass
         try:
-            return await self._write_memory_checked(uid, text, kind="photo_record", tier=0)
+            ok = await self._write_memory_checked(uid, text, kind="photo_record", tier=0)
+            if ok:
+                return True
+            # photo_record 这条路被守门人拦下过（结果就是拍了一堆照片一条记录都没有），
+            # 退一步用普通事件记，宁可降级也不能丢
+            logger.info("[amo] photo_record 没写进去，降级为 event: %s" % text[:40])
+            return await self._write_memory_checked(uid, "【照片】" + text, kind="event", tier=0)
         except Exception as exc:
-            logger.debug("[amo] 照片记忆写入失败: %s" % exc)
+            logger.warning("[amo] 照片记忆写入失败: %s" % exc)
             return False
 
     async def _maybe_his_day_digest(self):
