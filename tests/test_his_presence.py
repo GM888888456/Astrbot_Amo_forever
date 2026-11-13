@@ -62,12 +62,14 @@ class HisPresenceTests(unittest.TestCase):
         self.assertIn("自己出门", out[0]["activity"])
         self.assertIn("南明区·小窝", out[2]["place"], "他的桌面要换回她自己的家")
 
-    def test_chat_confirmed_presence_is_kept(self):
+    def test_chat_presence_never_leaks_into_schedule(self):
         state = make_state({"his_present_day": TODAY})
         items = [{"start": "20:00", "end": "21:00", "activity": "他来找我，一起吃饭",
                   "place": "家", "category": "meal"}]
         out = state._strip_his_presence(items, TODAY)
-        self.assertIn("他来找我", out[0]["activity"])
+        # 他只能出现在聊天里：哪怕聊天确认他今天在，日程也不许写他
+        self.assertNotIn("他", out[0]["activity"])
+        self.assertTrue(out[0].get("his_hidden"))
 
     def test_other_day_presence_does_not_leak(self):
         state = make_state({"his_present_day": "2026-11-10"})
