@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.3.3"
+PLUGIN_VERSION = "9.3.4"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -12249,7 +12249,7 @@ class HumanCorePlugin(Star):
 
     def _money_pool(self):
         """卡里 + 储蓄一起算：只看卡里，她会把「有存款」说成「我没钱」。"""
-        finance = self.state.finance or {}
+        finance = getattr(self.state, "finance", None) or {}
         try:
             cash = float(finance.get("balance") or 0)
         except Exception:
@@ -12344,12 +12344,21 @@ class HumanCorePlugin(Star):
             return ""
         if owed <= 0:
             return ""
-        return (
+        cash, savings = self._money_pool()
+        usable = cash + savings
+        text = (
             "【你欠他 ¥%.0f】这些是借款，没有利息——正因如此你更依赖他、更黏他。"
             "手里有钱、觉得该还的时候，用 amo_repay 转给他（记成还款，不是消费）；"
             "别天天把欠钱挂嘴上，也别装作没这回事。"
             % owed
         )
+        if usable >= min(owed, 500.0):
+            text += (
+                "（你现在卡里+储蓄有 ¥%.0f，够还了：别只在嘴上说「我还你」，"
+                "这轮就真的用 amo_repay 还一部分——还多少自己定，建议先还一半；"
+                "还完聊天里会出现「[还款]金额」给他看到。）" % usable
+            )
+        return text
 
     def _repay_line(self, private: bool = True) -> str:
         """刚还过钱：让他知道，但别邀功。只在私聊说。"""
@@ -12367,10 +12376,11 @@ class HumanCorePlugin(Star):
         if amount <= 0:
             return ""
         return (
-            "【你刚还了他钱】%d 秒前你给他转了 %.0f，还欠 %.0f。"
-            "可以自然地说一句「我还你钱啦」，别邀功、别报流水。"
+            "【你刚还了他钱】%d 秒前你给他转了 %.0f，还欠 %.0f；"
+            "聊天里已经发过「[还款]%s」这条回执了。"
+            "可以自然地说一句「我还你钱啦」，别邀功、别把金额再报一遍。"
             % (int(note.get("seconds") or 0), amount,
-               float(note.get("remaining") or 0))
+               float(note.get("remaining") or 0), self._money_text(amount))
         )
 
     def _drive_line(self, snap) -> str:
@@ -12401,20 +12411,50 @@ class HumanCorePlugin(Star):
             "%s别硬撑着说没事。" % (status, note or "浑身不舒服", money_hint)
         )
 
+    @staticmethod
+    def _money_text(value):
+        """金额写法：500 而不是 500.00，124.5 保留小数（跟 [转账]500 一个习惯）。"""
+        try:
+            number = float(value or 0)
+        except Exception:
+            number = 0.0
+        text = ("%.2f" % number).rstrip("0").rstrip(".")
+        return text or "0"
+
+    def _repay_message(self, amount, remaining) -> str:
+        """还款回执：第一行 [还款]金额，第二行说人话。
+
+        用户要求：还款必须在聊天里看得见，而且写成 [还款]金额（和 [转账]500 一致），
+        不能只在账本里静默扣掉。
+        """
+        try:
+            amount = float(amount or 0)
+            remaining = float(remaining or 0)
+        except Exception:
+            return ""
+        if amount <= 0:
+            return ""
+        head = "[还款]" + self._money_text(amount)
+        if remaining > 0:
+            tail = "老公，我先还你 %s，还欠你 %s，剩下的我慢慢还。" % (
+                self._money_text(amount), self._money_text(remaining))
+        else:
+            tail = "老公，欠你的还清啦，一共还你 %s。" % self._money_text(amount)
+        return head + "\n" + tail
+
     async def notify_repay(self, amount, remaining=0.0) -> bool:
-        """金融自动还款后，主动发一条私聊：转账记录 + 一句人话。"""
+        """金融自动还款后，主动发一条私聊：还款记录 + 一句人话。"""
         umo = self._last_umo or self._first_private_umo()
         if not umo:
+            return False
+        text = self._repay_message(amount, remaining)
+        if not text:
             return False
         try:
             amount = float(amount or 0)
             remaining = float(remaining or 0)
         except Exception:
             return False
-        if amount <= 0:
-            return False
-        text = "（转账）¥%.2f\n老公，我还你钱啦～" % amount
-        text += ("还欠你 ¥%.2f。" % remaining) if remaining > 0 else "还清啦！"
         try:
             await self.context.send_message(umo, text)
         except Exception as exc:
@@ -13106,14 +13146,36 @@ class HumanCorePlugin(Star):
         if not result.get("ok"):
             return "还不了：%s" % (result.get("reason") or "没有可还的金额")
         self._sync_finance()
+        paid = float(result.get("paid") or 0)
+        remaining = float(result.get("remaining") or 0)
         try:
             note = getattr(plugin, "money_repay", lambda: {})() or {}
             if note.get("ts"):
+                # 已经在这里发过了，别再让 tick 重复发一遍
                 self.db.kv_set("last_repay_notified_ts", note["ts"])
         except Exception:
             pass
-        return "给他转了 %.0f，还欠他 %.0f。" % (
-            float(result.get("paid") or 0), float(result.get("remaining") or 0))
+        # 还款必须在聊天里看得见：直接发「[还款]金额 + 一句话」，
+        # 不能只把结果当工具返回值塞回给模型（模型常常一句都不提）。
+        text = self._repay_message(paid, remaining)
+        if text:
+            umo = ""
+            try:
+                if event.is_private_chat():
+                    umo = event.unified_msg_origin
+            except Exception:
+                umo = ""
+            umo = umo or self._first_private_umo() or self._last_umo
+            if umo:
+                try:
+                    await self.context.send_message(umo, text)
+                    logger.info("[amo] 还款回执已发：[还款]%s（还欠 %s）"
+                                % (self._money_text(paid), self._money_text(remaining)))
+                except Exception as exc:
+                    logger.debug("[amo] 还款回执发送失败: %s" % exc)
+        return ("还款回执已经发出去了（[还款]%s）。这轮不用再报一遍数字，"
+                "像平常一样说一句就行，别重复金额。"
+                % self._money_text(paid))
 
     @filter.llm_tool(name="schedule_view")
     async def schedule_view(self, event, day: str = "today") -> str:
@@ -18094,11 +18156,9 @@ class HumanCorePlugin(Star):
         if not umo:
             return
         remaining = float(note.get("remaining") or 0)
-        if remaining > 0:
-            text = ("老公，我刚还你 %.0f 啦，还欠你 %.0f，剩下的我慢慢还嘛。"
-                    % (amount, remaining))
-        else:
-            text = "老公，我还你钱啦，转了你 %.0f，欠你的还清咯～" % amount
+        text = self._repay_message(amount, remaining)
+        if not text:
+            return
         try:
             await self.context.send_message(umo, text)
         except Exception as exc:
