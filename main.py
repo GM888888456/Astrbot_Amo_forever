@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.5.0"
+PLUGIN_VERSION = "8.5.1"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -10631,8 +10631,9 @@ class HumanCorePlugin(Star):
         status = str(health.get("status") or "")
         note = str(health.get("note") or "")
         return (
-            "【生病】你现在得了%s，%s。整个人难受、没力气、想被照顾，"
-            "但不会自己跑去医院；等他发现你不对劲、说“走我带你去医院”，你才去。"
+            "【生病】你现在得了%s，%s。整个人难受、没力气、想被照顾。"
+            "有钱的话你会自己去看病（医疗那边会自动判断）；钱不够就先扛着，"
+            "他催你去医院时，可以委屈地说没钱，等他转钱给你、说带你去，你才去。"
             "别硬撑着说没事。" % (status, note or "浑身不舒服")
         )
 
@@ -11679,6 +11680,10 @@ class HumanCorePlugin(Star):
             await self._sync_market_mood()
         except Exception as exc:
             logger.debug("[amo] 股市心情同步失败: %s" % exc)
+        try:
+            await self._maybe_treat()
+        except Exception as exc:
+            logger.debug("[amo] 就医判断失败: %s" % exc)
         await self.state.refresh_weather()
         try:
             await self._maybe_weather_alert()
@@ -16259,10 +16264,11 @@ class HumanCorePlugin(Star):
             hours = 0
         self.state.set_health(status, hours, note)
 
-    #: 他带她去医院的说法（只认私聊）
+    #: 只有「他带她去」才触发手动就医；单纯催促（“去医院看看”“病成这样”）
+    #: 不触发——留给她回一句“没钱”，等他转钱、带她去再治。
     DOCTOR_WORDS = (
-        "去医院", "看医生", "看病", "带你去医院", "带你去看病", "带你去看医生",
-        "病成这样", "还不去医院", "走我带你去", "我带你去医院", "去医院看看",
+        "我带你去", "走我带你去", "带你去医院", "带你去看病", "带你去看医生",
+        "带你去看看", "我带你看病", "我带你去看看",
     )
 
     async def _maybe_user_takes_her_to_doctor(self, event, text) -> bool:
@@ -16328,8 +16334,41 @@ class HumanCorePlugin(Star):
         )
 
     async def _maybe_treat(self) -> None:
-        """旧的后台自动就医已停用：现在只有他带她去医院才治。"""
-        return
+        """换成医疗插件管的病情后，由它决定治不治、钱够不够。
+
+        她自己会去看病；医疗插件会回调 self.charge()——**所以这里仍然是
+        「她知情」的那条路**。成功只写状态，不刷日志；失败由医疗插件记 warning。
+        """
+        medical = self._medical()
+        if medical is None:
+            return
+        try:
+            info = medical.status()
+        except Exception:
+            return
+        if not info.get("sick"):
+            return
+        # 同一个病一天只判断一次，避免后台循环反复去治
+        key = "%s|%s" % (today_str(), info.get("illness") or info.get("status"))
+        if getattr(self, "_treat_marked", None) == key:
+            return
+        self._treat_marked = key
+        try:
+            result = await medical.treat(auto=True)
+        except Exception as exc:
+            logger.warning("[amo] 就医失败: %s" % exc)
+            return
+        if result.get("skipped"):
+            # 手动模式 / 她自己先扛着：都不是失败，不该记成焦虑
+            logger.debug("[amo] 这次没去看病：%s" % result.get("reason"))
+            return
+        if result.get("ok"):
+            logger.info("[amo] 去看了病：%s，自付 %.0f"
+                        % (result.get("name"), float(result.get("self_pay") or 0)))
+            # 状态交给医疗插件：它说「恢复中」就写恢复中
+            self._sync_health_from_medical()
+        else:
+            self.state.nudge(焦虑=8, 郁闷=4)
 
     # ---------- 世界页照片：单击自拍、三击一寸证件照 ----------
 

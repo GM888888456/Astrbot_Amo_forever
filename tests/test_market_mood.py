@@ -152,6 +152,12 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(calls.get("treat"), False)   # auto=False：手动就医
         self.assertTrue(calls.get("synced"))
 
+    def test_pure_urge_does_not_treat(self):
+        obj, event, calls = self._plugin()
+        said = "都病成这样了还不去医院看看"
+        self.assertFalse(asyncio.run(obj._maybe_user_takes_her_to_doctor(event, said)))
+        self.assertNotIn("treat", calls)
+
     def test_not_urged_stays_home(self):
         obj, event, calls = self._plugin()
         self.assertFalse(asyncio.run(obj._maybe_user_takes_her_to_doctor(event, "今天吃什么")))
@@ -161,6 +167,28 @@ class DoctorTests(unittest.TestCase):
         obj, event, calls = self._plugin(sick=False)
         self.assertFalse(asyncio.run(obj._maybe_user_takes_her_to_doctor(event, "走我带你去医院")))
         self.assertNotIn("treat", calls)
+
+
+class AutoTreatTests(unittest.TestCase):
+    def test_auto_treat_uses_auto_true(self):
+        calls = {}
+
+        class FakeMedical:
+            def status(self):
+                return {"sick": True, "illness": "cold", "status": "感冒"}
+
+            async def treat(self, auto=False):
+                calls["auto"] = auto
+                return {"ok": True, "name": "感冒", "self_pay": 12.0}
+
+        obj = object.__new__(M.HumanCorePlugin)
+        obj._medical = lambda: FakeMedical()
+        obj._sync_health_from_medical = lambda: calls.__setitem__("synced", True)
+        obj.state = type("S", (), {"nudge": lambda self, **kw: None})()
+        obj._treat_marked = None
+        asyncio.run(obj._maybe_treat())
+        self.assertEqual(calls.get("auto"), True)
+        self.assertTrue(calls.get("synced"))
 
 
 class SickTests(unittest.TestCase):
