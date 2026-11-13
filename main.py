@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.5.5"
+PLUGIN_VERSION = "8.5.6"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -8160,7 +8160,19 @@ class HumanCorePlugin(Star):
                 "【状态：饥饿 %.0f/100】你有点饿了，注意力开始散，想花钱买点吃的。"
                 "可以随口提一句，别硬撑。" % satiety)
         if hydration < hungry_at:
-            texts.append("【状态：口渴 %.0f/100】你渴了，想喝水或者买杯喝的。" % hydration)
+            try:
+                last_thirst = float(self.db.kv_get("thirst_hint_ts", 0) or 0)
+            except Exception:
+                last_thirst = 0.0
+            gap = 30 * 60 if hydration < 10 else 90 * 60
+            if now_ts() - last_thirst >= gap:
+                texts.append(
+                    "【状态：口渴 %.0f/100】你渴了。渴了就顺手用 "
+                    "amo_eat(dish=水, method=drink) 喝掉，别只挂在嘴上说不做。" % hydration)
+                try:
+                    self.db.kv_set("thirst_hint_ts", now_ts())
+                except Exception:
+                    pass
         try:
             last = self.db.kv_get("last_meal", {}) or {}
         except Exception:

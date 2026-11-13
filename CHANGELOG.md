@@ -1,5 +1,9 @@
 # Changelog
 
+## 8.5.6（口渴提示冷却 + 必须真喝）
+
+- `_vitals_hint` 的口渴提示加冷却：一般 90 分钟一次，水分 <10 才 30 分钟一次；提示明确要求调用 `amo_eat(dish=水, method=drink)`，不要只嘴上说去买。
+
 ## 8.5.5（同步金融不阻塞 + 吃饭 not_home 反馈）
 
 - `_sync_finance` 用 `snapshot(refresh=False)`、`_sync_market_mood` 用 `mood_signal(refresh=False)`，不在 async 路径拉行情。
