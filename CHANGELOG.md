@@ -1,5 +1,12 @@
 # Changelog
 
+## 8.9.2（枚举落地第一层：心情 / 日程分类 / 场景区域）
+
+- 新增 `amo_enums.py`：`MoodKey`、`ActivityCategory`、`SceneZone` 三个 `str` 枚举，**值就是原来的字符串**（`MoodKey.ANGRY == "生气"`、`ActivityCategory.SLEEP == "sleep"`），`str()` 也输出中文值，拼提示词/写库不会出现 `MoodKey.ANGRY`。
+- `MOOD_KEYS` 改成从 `MoodKey` 派生，顺序不变；老数据库、老配置不需要迁移。
+- 新增 `coerce()` / `value_of()`：读历史脏数据时把裸字符串转成枚举，认不出的退回默认值，不抛异常（带空格的能认，大小写不对的退回默认）。
+- 目的：把「字段拼错 → 静默走错分支 → 看起来像失忆/幻视」这类问题变成当场报错。日程分类和场景区域的字面量会在后续提交里逐处替换。
+
 ## 8.9.1（睡觉这件事有状态机了：枚举化）
 
 - 新增 `sleep_cycle.py`：`SleepPhase`（醒着/睡着/半夜醒）、`SleepAnswer`（答应/太早/不想）、`WakeReason`（口渴/做梦/噩梦/吵醒/起夜/热醒/冻醒/想他/手机亮/睡不着…）全部用 `Enum`，中文说法集中在一张表里。

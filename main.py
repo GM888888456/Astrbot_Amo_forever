@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.9.1"
+PLUGIN_VERSION = "8.9.2"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -659,7 +659,10 @@ SCHEDULE_VERSION = "backbone-v6"
 OUTFIT_VERSION = "outfit-v5"  # 穿搭规则变了就改这里，旧日程会自动重配
 DIARY_WARM_VERSION = "diary-v2"  # 小日记规则变了就改这里，会重新预生成
 NETWORK_RELATIONS = ("家人", "恋人", "朋友", "同事", "同学", "熟人", "陌生人", "仇人")
-MOOD_KEYS = ("开心", "平静", "郁闷", "生气", "暴躁", "委屈", "疲惫", "焦虑", "兴奋", "依恋")
+try:
+    from .amo_enums import MOOD_KEYS, ActivityCategory, MoodKey, SceneZone, coerce, value_of
+except ImportError:  # 直接按文件加载时
+    from amo_enums import MOOD_KEYS, ActivityCategory, MoodKey, SceneZone, coerce, value_of
 #: 真正算「生病」的状态；「疲惫」只是累，不该按病号排日程。
 SICK_STATUSES = ("轻微不适", "感冒", "低烧", "发烧", "不舒服", "生病", "拉肚子")
 MOOD_BASE = {
