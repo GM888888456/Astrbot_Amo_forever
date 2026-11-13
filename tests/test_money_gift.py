@@ -76,6 +76,17 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(obj._borrow_line(), "")
 
 
+class GiftLineTests(unittest.TestCase):
+    def test_gift_is_for_eating_well(self):
+        obj = build()
+        obj._finance = lambda: type("F", (), {"money_gift": lambda self: {
+            "amount": 7150.0, "channel": "transfer", "owed": 7150.0,
+            "seconds": 10}})()
+        text = obj._gift_line()
+        self.assertIn("吃好的", text)
+        self.assertIn("老公今天怎么对我这么好啊", text)
+
+
 class PrivateOnlyTests(unittest.TestCase):
     def test_group_message_ignored(self):
         obj = build()
