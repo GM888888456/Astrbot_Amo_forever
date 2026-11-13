@@ -549,7 +549,8 @@ class DrawEngine:
             selfie = True
         if selfie:
             # 「发张自拍」：按自拍提示词走，穿今天固定的那一套
-            parts = ["自拍"]
+            parts = ["自拍（手机前置，近景半身，直视镜头，画面里只有我自己，"
+                     "不是别人拿手机拍）"]
             outfit = ""
             photo = getattr(self.plugin, "photo", None)
             getter = getattr(photo, "outfit_today", None) if photo is not None else None

@@ -483,9 +483,9 @@ class PhotoEngine:
         place = self._clean_place(activity.get("place"))
         act = str(activity.get("activity") or "")
         if kind == "outfit":
-            return "自拍，穿着%s，在%s，自然光，手机前置摄像头，生活感" % (
-                self.outfit_today(), place or "家门口"
-            )
+            return ("自拍（手机前置，近景半身，直视镜头，画面里只有我自己，"
+                    "不是别人拿手机拍），穿着%s，在%s，自然光，生活感" % (
+                self.outfit_today(), place or "家门口"))
         if kind == "travel":
             return (prefix + (scene or act or "风景区") + "，风景照，自然光").strip("，")
         if kind == "shopping":
@@ -503,9 +503,9 @@ class PhotoEngine:
             where = scene or place or "商场"
         else:
             where = place or "家附近"
-        return "自拍，穿着%s，在%s，%s，自然光，手机前置摄像头，生活感" % (
-            self.outfit_today(), where, act or "随手拍"
-        )
+        return ("自拍（手机前置，近景半身，直视镜头，画面里只有我自己，"
+                "不是别人拿手机拍），穿着%s，在%s，%s，自然光，生活感" % (
+            self.outfit_today(), where, act or "随手拍"))
 
     def _find_omni(self):
         now = time.monotonic()
