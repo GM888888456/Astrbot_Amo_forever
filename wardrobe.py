@@ -215,7 +215,7 @@ class Wardrobe:
             self._save()
         return len(rows[:MAX_ITEMS])
 
-    def add(self, name, scenes=None, gender="通用", note=""):
+    def add(self, name, scenes=None, gender="通用", note="", slot=""):
         name = clean_name(name)
         if len(name) < MIN_NAME:
             return {}
@@ -237,6 +237,7 @@ class Wardrobe:
             item = {
                 "id": "w" + uuid.uuid4().hex[:10],
                 "name": name,
+                "slot": str(slot or ""),
                 "scenes": scenes or guess_scenes(name),
                 "gender": gender if gender in ("女", "男", "通用") else "通用",
                 "enabled": True,

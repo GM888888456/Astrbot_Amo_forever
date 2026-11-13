@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.2.0"
+PLUGIN_VERSION = "9.3.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -6342,6 +6342,54 @@ class HumanCorePlugin(Star):
         except Exception as exc:
             logger.debug("[amo] 记录写入失败: %s" % exc)
             return False
+
+    @filter.llm_tool(name="amo_buy")
+    async def amo_buy(self, event, item: str = "", kind: str = "outfits") -> str:
+        """给自己买东西：衣服、首饰、菜、药、外卖。查市场价 → 扣钱 → 衣服首饰进衣柜。
+
+        Args:
+            item(string): 商品名，比如 白色衬衫 / 珍珠发圈 / 番茄。
+            kind(string): outfits 衣服 / jewelry 首饰 / groceries 菜 / drugs 药 / takeout 外卖。
+        """
+        plugin = self._market_plugin()
+        if plugin is None:
+            return "市场没开，买不了。"
+        word = str(item or "").strip()
+        if not word:
+            return "没说要买什么。"
+        order = [str(kind or "outfits")] + [k for k in ("outfits", "jewelry", "groceries", "drugs", "takeout")
+                                            if k != str(kind or "outfits")]
+        row = None
+        found_kind = ""
+        for k in order:
+            try:
+                rows = plugin.items(k) or []
+            except Exception:
+                rows = []
+            for candidate in rows:
+                name = str(candidate.get("name") or "")
+                if word in name or name in word:
+                    row, found_kind = candidate, k
+                    break
+            if row is not None:
+                break
+        if row is None:
+            return "市场没有「%s」。" % word
+        name = str(row.get("name") or word)
+        price = round(float(row.get("price") or 0), 2)
+        result = await self.charge(price, reason="买%s" % name, payee="市场", source="market")
+        if not result.get("ok"):
+            return "没买成：%s" % (result.get("reason") or "钱不够")
+        tail = ""
+        if found_kind in ("outfits", "jewelry") and getattr(self, "wardrobe", None) is not None:
+            try:
+                self.wardrobe.add(name, scenes=["casual", "out"], note="市场买",
+                                  slot=str(row.get("slot") or ""))
+                tail = "，已经放进衣柜"
+            except Exception as exc:
+                logger.debug("[amo] 买完放衣柜失败: %s" % exc)
+        return "买了%s，%.2f¥（余额 %.2f¥）%s。" % (
+            name, price, float(result.get("balance") or 0), tail)
 
     async def _maybe_change_outfit(self, event, text):
         """中央集权：换装由 Amo 判、Amo 说，造型由生图插件执行。
@@ -13318,6 +13366,9 @@ class HumanCorePlugin(Star):
         if now_ts() - to_float(getattr(self, "_last_his_digest", 0), 0) > 300:
             self._last_his_digest = now_ts()
             self._spawn(self._maybe_his_day_digest())
+        if now_ts() - to_float(getattr(self, "_last_night_close", 0), 0) > 180:
+            self._last_night_close = now_ts()
+            self._spawn(self._maybe_night_close())
         if now_ts() - to_float(getattr(self, "_last_diary_check", 0), 0) > 300:
             self._last_diary_check = now_ts()
             self._spawn(self._maybe_daily_diary())
@@ -13727,6 +13778,63 @@ class HumanCorePlugin(Star):
                     self.db.kv_set(key, max(last_ts + 1, since))
                 except Exception:
                     pass
+
+    async def _maybe_night_close(self):
+        """每天 23:55：把今天的记录写成一条总结记忆，然后备份一次。
+
+        幂等：同一天只做一次。备份走记忆插件的 backup_now（整库快照，含日程缓存）。
+        """
+        now = _now()
+        if not (now.hour == 23 and now.minute >= 55):
+            return
+        day = now.strftime("%Y-%m-%d")
+        guard = "night_close:" + day
+        try:
+            if self.db.kv_get(guard, ""):
+                return
+        except Exception:
+            pass
+        lines = []
+        plugin = self._data_plugin()
+        store = getattr(plugin, "store", None) if plugin is not None else None
+        lister = getattr(store, "records_list", None)
+        if callable(lister):
+            try:
+                rows = (lister("", "", 200, 0) or {}).get("items") or []
+            except Exception:
+                rows = []
+            for row in rows:
+                if not str(row.get("time") or "").startswith(day):
+                    continue
+                text = str(row.get("title") or "").strip()
+                why = str(row.get("reason") or "").strip()
+                lines.append(text + (("（" + why + "）") if why else ""))
+        summary = "；".join(lines[-12:]) if lines else "今天没什么特别的"
+        uid = ""
+        try:
+            uid = str(self._primary_uid() or "")
+        except Exception:
+            uid = ""
+        if uid:
+            try:
+                await self._write_memory_checked(
+                    uid, "【%s 收尾】%s" % (day, summary[:800]),
+                    kind="daily_digest", tier=0)
+            except Exception as exc:
+                logger.debug("[amo] 夜间总结写入失败: %s" % exc)
+        backed = ""
+        backup = getattr(plugin, "backup_now", None) if plugin is not None else None
+        if callable(backup):
+            try:
+                backed = str(await backup(7) or "")
+            except Exception as exc:
+                logger.debug("[amo] 夜间备份失败: %s" % exc)
+        try:
+            self.db.kv_set(guard, day)
+        except Exception:
+            pass
+        logger.info("[amo] 夜间收尾完成：%d 条记录，备份 %s" %
+                    (len(lines), backed or "失败"))
 
     async def _maybe_daily_digest(self):
         """每天上午把"昨天"的聊天压成一条长期记忆（阶段记忆）。"""
