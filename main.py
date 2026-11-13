@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.1.5"
+PLUGIN_VERSION = "9.2.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -6324,6 +6324,25 @@ class HumanCorePlugin(Star):
                 logger.debug("[amo] 日程清洗失败: %s" % exc)
         return sched
 
+    def _record(self, kind, title, detail="", reason="", amount=0.0):
+        """只增不改的记录：买了什么/想过什么/为什么没买/为什么买股票。"""
+        plugin = self._data_plugin()
+        store = getattr(plugin, "store", None) if plugin is not None else None
+        fn = getattr(store, "record_add", None)
+        if not callable(fn):
+            return False
+        try:
+            bot_id = ""
+            getter = getattr(self, "_data_bot_id", None)
+            if callable(getter):
+                bot_id = str(getter() or "")
+            fn(bot_id, str(kind or "note"), str(title or ""), str(detail or ""),
+               str(reason or ""), float(amount or 0))
+            return True
+        except Exception as exc:
+            logger.debug("[amo] 记录写入失败: %s" % exc)
+            return False
+
     async def _maybe_change_outfit(self, event, text):
         """中央集权：换装由 Amo 判、Amo 说，造型由生图插件执行。
 
@@ -6346,6 +6365,8 @@ class HumanCorePlugin(Star):
         except Exception:
             hit = ""
         if wardrobe is not None and not hit:
+            self._record("skip", "想穿「%s」" % word, "衣柜里没有",
+                         "等有空去市场买", 0)
             try:
                 wishes = self.db.kv_get("outfit_wish", []) or []
                 if word not in wishes:
@@ -9191,6 +9212,7 @@ class HumanCorePlugin(Star):
         except Exception:
             pass
         try:
+            self._record("photo", "拍了一张%s" % (label or "照片"), text, "", 0)
             ok = await self._write_memory_checked(uid, text, kind="photo_record", tier=0)
             if ok:
                 return True
@@ -17695,6 +17717,9 @@ class HumanCorePlugin(Star):
         self._charge_cache_put(rid, result, amount=value)
         if not result.get("repeated"):
             await self._record_expense(value, reason, detail, source, result, uid)
+            if result.get("ok"):
+                self._record("buy", reason or "花钱", detail or payee,
+                             "source=%s" % (source or "-"), value)
         return result
 
     async def _record_expense(self, amount, reason, detail, source, result, uid=""):
