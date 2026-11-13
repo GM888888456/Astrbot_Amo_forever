@@ -122,6 +122,15 @@ class InvestAwarenessTests(unittest.TestCase):
         self.assertIn("还没有持仓", text)
 
 
+class SickTests(unittest.TestCase):
+    def test_sick_line(self):
+        obj = object.__new__(M.HumanCorePlugin)
+        text = obj._sick_line({"health": {"status": "感冒", "note": "喉咙痛"}})
+        self.assertIn("感冒", text)
+        self.assertIn("医院", text)
+        self.assertIn("难受", text)
+
+
 class DebtTests(unittest.TestCase):
     def _plugin(self, owed=0.0, repay=None):
         obj = object.__new__(M.HumanCorePlugin)

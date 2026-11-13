@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.4.1"
+PLUGIN_VERSION = "8.5.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -8175,7 +8175,7 @@ class HumanCorePlugin(Star):
         if texts:
             menu = self._food_menu()
             if menu:
-                texts.append("【现在能吃的】" + menu + "。要用 amo_eat 工具去买或去做，别自己编价格。")
+                texts.append("【现在能吃的】" + menu + "。要用 amo_eat 工具去买或去做；按你人格里的口味挑，别默认某一道菜，别自己编价格。")
         return ("\n" + "\n".join(texts)) if texts else ""
 
     async def _maybe_hunger_sick(self) -> None:
@@ -9438,24 +9438,40 @@ class HumanCorePlugin(Star):
             except Exception:
                 pass
             try:
-                if raw_text and await self._handle_money_gift(event, raw_text):
+                if (raw_text and event.is_private_chat()
+                        and await self._handle_money_gift(event, raw_text)):
                     return
             except Exception as exc:
                 logger.debug("[amo] 收款处理失败: %s" % exc)
+            try:
+                if raw_text:
+                    await self._maybe_user_takes_her_to_doctor(event, raw_text)
+            except Exception as exc:
+                logger.debug("[amo] 就医处理失败: %s" % exc)
             await self._handle_message(event)
         except Exception:
             logger.exception("[amo] 消息处理异常")
 
-    #: 他给钱的说法：模板 [转账]多少钱 / [红包]多少钱，也认不带括号的
+    #: 他给钱的说法：[转账]金额 [货币] / [红包]金额 [货币]，只认私聊。
+    #: 货币留空按人民币；USD/HKD 按金融插件的汇率折成人民币记账。
+    MONEY_CURRENCIES = {
+        "CNY": "CNY", "RMB": "CNY", "人民币": "CNY", "元": "CNY", "块": "CNY",
+        "USD": "USD", "美元": "USD", "美金": "USD",
+        "HKD": "HKD", "港币": "HKD", "港元": "HKD",
+    }
     MONEY_TEMPLATES = (
-        (re.compile(r"[\[【(（]\s*转账\s*[\]】)）]\s*(\d+(?:\.\d+)?)\s*(万)?"), "transfer"),
-        (re.compile(r"^\s*转账\s*(\d+(?:\.\d+)?)\s*(万)?"), "transfer"),
-        (re.compile(r"[\[【(（]\s*红包\s*[\]】)）]\s*(\d+(?:\.\d+)?)\s*(万)?"), "red"),
-        (re.compile(r"^\s*红包\s*(\d+(?:\.\d+)?)\s*(万)?"), "red"),
+        (re.compile(r"[\[【(（]\s*转账\s*[\]】)）]\s*(\d+(?:\.\d+)?)\s*(万)?\s*"
+                    r"(人民币|美元|美金|港币|港元|CNY|RMB|USD|HKD|元|块)?", re.I), "transfer"),
+        (re.compile(r"^\s*转账\s*(\d+(?:\.\d+)?)\s*(万)?\s*"
+                    r"(人民币|美元|美金|港币|港元|CNY|RMB|USD|HKD|元|块)?", re.I), "transfer"),
+        (re.compile(r"[\[【(（]\s*红包\s*[\]】)）]\s*(\d+(?:\.\d+)?)\s*(万)?\s*"
+                    r"(人民币|美元|美金|港币|港元|CNY|RMB|USD|HKD|元|块)?", re.I), "red"),
+        (re.compile(r"^\s*红包\s*(\d+(?:\.\d+)?)\s*(万)?\s*"
+                    r"(人民币|美元|美金|港币|港元|CNY|RMB|USD|HKD|元|块)?", re.I), "red"),
     )
 
     def _parse_money_gift(self, text):
-        """从消息里认出「他给我钱」。返回 (channel, amount) 或 None。"""
+        """从私聊消息里认出「他给我钱」。返回 (channel, amount, currency) 或 None。"""
         body = str(text or "").strip()
         if not body:
             return None
@@ -9471,40 +9487,55 @@ class HumanCorePlugin(Star):
                 amount *= 10000
             if amount <= 0:
                 continue
-            return channel, round(amount, 2)
+            raw = str(match.group(3) or "").strip().upper()
+            currency = self.MONEY_CURRENCIES.get(raw, "CNY")
+            return channel, round(amount, 2), currency
         return None
 
     #: 收到他转账/红包之后的反应：先甜一下，再记着欠多少
     GIFT_REPLIES = (
-        "老公今天怎么对我这么好啊？{kind} {amt:.0f} 我收下啦……我记着欠你 {owed:.0f} 呢，等我发财了双倍还你。",
-        "哇，{amt:.0f} 的{kind}！你是不是又偷偷心疼我了……我记下了，欠你 {owed:.0f}，不许催我。",
-        "谢谢老公（小声）……{amt:.0f} 我收到了，我以后一定对你好一点。现在欠你 {owed:.0f}。",
-        "{amt:.0f} 的{kind}到啦！老公最好啦～我记着这笔，欠你 {owed:.0f}，等我赚回来请你吃饭。",
+        "老公今天怎么对我这么好啊？{kind} {amt} 我收下啦……我记着欠你 {owed:.0f} 呢，等我发财了双倍还你。",
+        "哇，{amt} 的{kind}！你是不是又偷偷心疼我了……我记下了，欠你 {owed:.0f}，不许催我。",
+        "谢谢老公（小声）……{amt} 我收到了，我以后一定对你好一点。现在欠你 {owed:.0f}。",
+        "{amt} 的{kind}到啦！老公最好啦～我记着这笔，欠你 {owed:.0f}，等我赚回来请你吃饭。",
     )
 
-    def _warm_gift_reply(self, kind, amount, owed):
+    def _warm_gift_reply(self, kind, amount, owed, origin=""):
+        amount_text = origin or ("%.0f" % float(amount or 0))
         try:
             template = random.choice(self.GIFT_REPLIES)
-            return template.format(kind=kind, amt=float(amount or 0), owed=float(owed or 0))
+            return template.format(kind=kind, amt=amount_text, owed=float(owed or 0))
         except Exception:
-            return "收了你的%s %.0f，我记着欠你 %.0f。" % (
-                kind, float(amount or 0), float(owed or 0))
+            return "收了你的%s %s，我记着欠你 %.0f。" % (
+                kind, amount_text, float(owed or 0))
 
     async def _handle_money_gift(self, event, text) -> bool:
         """他转钱/发红包给她：算借款，走金融账本。
 
         返回 True 表示这条消息已经处理完（不用再进聊天链路）。
         """
+        if not event.is_private_chat():
+            return False
         parsed = self._parse_money_gift(text)
         if not parsed:
             return False
-        channel, amount = parsed
+        channel, amount, currency = parsed
         plugin = self._finance()
         borrower = getattr(plugin, "borrow", None) if plugin is not None else None
         if not callable(borrower):
             return False
+        cny = amount
+        if currency != "CNY":
+            rate = 1.0
+            reader = getattr(plugin, "fx_rate", None) if plugin is not None else None
+            if callable(reader):
+                try:
+                    rate = float(reader(currency) or 1.0)
+                except Exception:
+                    rate = 1.0
+            cny = round(amount * rate, 2)
         try:
-            result = borrower(amount, channel, str(event.get_sender_id() or ""))
+            result = borrower(cny, channel, str(event.get_sender_id() or ""))
         except Exception as exc:
             logger.warning("[amo] 借款失败: %s" % exc)
             result = {"ok": False, "reason": "账本没响应"}
@@ -9516,8 +9547,10 @@ class HumanCorePlugin(Star):
             yield_text = "这个我收不下：" + reason
         else:
             kind = "红包" if result.get("channel") == "red" else "转账"
-            yield_text = self._warm_gift_reply(
-                kind, float(result.get("amount") or 0), float(result.get("owed") or 0))
+            owed = float(result.get("owed") or 0)
+            origin = (("%s %.2f（折合 ¥%.2f）" % (currency, amount, cny))
+                      if currency != "CNY" else ("%.2f" % cny))
+            yield_text = self._warm_gift_reply(kind, cny, owed, origin=origin)
         try:
             await self.context.send_message(event.unified_msg_origin, yield_text)
         except Exception as exc:
@@ -10592,6 +10625,17 @@ class HumanCorePlugin(Star):
                float(note.get("remaining") or 0))
         )
 
+    def _sick_line(self, snap) -> str:
+        """生病时会难受、会想被照顾，但不会自己跑去医院。"""
+        health = snap.get("health") or {}
+        status = str(health.get("status") or "")
+        note = str(health.get("note") or "")
+        return (
+            "【生病】你现在得了%s，%s。整个人难受、没力气、想被照顾，"
+            "但不会自己跑去医院；等他发现你不对劲、说“走我带你去医院”，你才去。"
+            "别硬撑着说没事。" % (status, note or "浑身不舒服")
+        )
+
     def _invest_line(self) -> str:
         """她知道自己有股票、持了什么、今天赚赔——不然用户让她买，她完全不知道有这回事。"""
         inv = getattr(self.state, "invest", None) or {}
@@ -10715,6 +10759,8 @@ class HumanCorePlugin(Star):
             "【心情】" + self.state.mood_text(),
             "【生理期】" + snap["period"]["phase"] + "第" + str(snap["period"]["day"]) + "天",
             "【身体】" + snap["health"]["status"],
+            *([self._sick_line(snap)] if snap["health"].get("sick") else []),
+            *([self._doctor_line()] if self._doctor_line() else []),
             "【天气】" + snap["weather_text"],
             "【天气一致】你的天气以【天气】为准；不要说出和它相反的冷热（除非刚进出空调房/室内）。",
             "【正在】" + snap["activity"].get("activity", "休息") + "（" + self._short_place(snap["activity"].get("place", "家")) + "）",
@@ -11169,7 +11215,7 @@ class HumanCorePlugin(Star):
         """吃东西、喝水、买菜。饿了想买点吃的、想自己做饭、想喝点什么，都走这个工具。
 
         Args:
-            dish(string): 吃什么/喝什么/买什么，用菜单里的名字（泡面、外卖、酸菜鱼、番茄炒蛋盖饭、水、奶茶、鸡蛋…）。
+            dish(string): 吃什么/喝什么/买什么，按你人格里的口味和当下心情从菜单里挑（别默认某一道菜，也别总点同一样）。
             method(string): order=买现成的（默认）/ cook=用家里食材自己做 / drink=喝水喝饮料 / grocery=只买食材。
         """
         plugin = self._finance()
@@ -11633,10 +11679,6 @@ class HumanCorePlugin(Star):
             await self._sync_market_mood()
         except Exception as exc:
             logger.debug("[amo] 股市心情同步失败: %s" % exc)
-        try:
-            await self._maybe_treat()
-        except Exception as exc:
-            logger.debug("[amo] 就医判断失败: %s" % exc)
         await self.state.refresh_weather()
         try:
             await self._maybe_weather_alert()
@@ -16217,42 +16259,77 @@ class HumanCorePlugin(Star):
             hours = 0
         self.state.set_health(status, hours, note)
 
-    async def _maybe_treat(self) -> None:
-        """换成医疗插件管的病情后，由它决定治不治、钱够不够。
+    #: 他带她去医院的说法（只认私聊）
+    DOCTOR_WORDS = (
+        "去医院", "看医生", "看病", "带你去医院", "带你去看病", "带你去看医生",
+        "病成这样", "还不去医院", "走我带你去", "我带你去医院", "去医院看看",
+    )
 
-        医疗插件会回调 self.charge()——**所以这里仍然是「她知情」的那条路**。
-        成功只写状态，不刷日志；失败由医疗插件记 warning。
+    async def _maybe_user_takes_her_to_doctor(self, event, text) -> bool:
+        """他说要带她去医院，这才是她去看病的入口。
+
+        她自己不会主动去（后台每天自动判断那条路已经停掉）；只有他发现她不对劲、
+        说「都病成这样了还不去医院看看，走我带你去医院」，才走医疗插件的手动就医。
         """
+        if not text or not event.is_private_chat():
+            return False
         medical = self._medical()
         if medical is None:
-            return
+            return False
         try:
             info = medical.status()
         except Exception:
-            return
+            return False
         if not info.get("sick"):
-            return
-        # 同一个病一天只判断一次，避免后台循环反复去治
-        key = "%s|%s" % (today_str(), info.get("illness") or info.get("status"))
-        if getattr(self, "_treat_marked", None) == key:
-            return
-        self._treat_marked = key
+            return False
+        if not any(word in text for word in self.DOCTOR_WORDS):
+            return False
         try:
-            result = await medical.treat(auto=True)
+            result = await medical.treat(auto=False) or {}
         except Exception as exc:
-            logger.warning("[amo] 就医失败: %s" % exc)
-            return
-        if result.get("skipped"):
-            # 手动模式 / 她自己先扛着：都不是失败，不该记成焦虑
-            logger.debug("[amo] 这次没去看病：%s" % result.get("reason"))
-            return
+            logger.warning("[amo] 带她去医院失败: %s" % exc)
+            return False
+        note = {
+            "ts": now_ts(),
+            "name": str(result.get("name") or ""),
+            "self_pay": float(result.get("self_pay") or 0),
+            "ok": bool(result.get("ok")),
+            "reason": str(result.get("reason") or ""),
+        }
+        self.db.kv_set("doctor_note", note)
         if result.get("ok"):
-            logger.info("[amo] 去看了病：%s，自付 %.0f"
-                        % (result.get("name"), float(result.get("self_pay") or 0)))
-            # 状态交给医疗插件：它说「恢复中」就写恢复中
+            logger.info("[amo] 他带她去看了病：%s，自付 %.0f"
+                        % (note["name"], note["self_pay"]))
             self._sync_health_from_medical()
         else:
-            self.state.nudge(焦虑=8, 郁闷=4)
+            logger.info("[amo] 带她去医院没治成：%s"
+                        % (note["reason"] or "余额不足"))
+        return True
+
+    def _doctor_line(self) -> str:
+        """刚被带去看病（或没看成）：让她的反应接得上。"""
+        note = self.db.kv_get("doctor_note", {}) or {}
+        try:
+            age = now_ts() - float(note.get("ts") or 0)
+        except Exception:
+            return ""
+        if not note or age < 0 or age > 900:
+            return ""
+        if note.get("ok"):
+            return (
+                "【他带你去医院】%d 分钟前他带你去看了病（自付 %.0f），现在在恢复。"
+                "记得谢谢他、跟他撒个娇，别装没事，也别报流水。"
+                % (max(1, int(age // 60)), float(note.get("self_pay") or 0))
+            )
+        return (
+            "【他带你去医院】%d 分钟前他要带你去医院，但没治成：%s。"
+            "可以委屈地跟他说，别硬撑。"
+            % (max(1, int(age // 60)), note.get("reason") or "没钱")
+        )
+
+    async def _maybe_treat(self) -> None:
+        """旧的后台自动就医已停用：现在只有他带她去医院才治。"""
+        return
 
     # ---------- 世界页照片：单击自拍、三击一寸证件照 ----------
 
