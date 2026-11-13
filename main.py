@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.1.3"
+PLUGIN_VERSION = "9.1.4"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -2850,6 +2850,10 @@ class HumanState:
         self.invest = {}
         self.worldview = self.db.kv_get("worldview", {}) or {}
         self.schedule = self.db.kv_get("schedule", {}) or {}
+        try:
+            self.schedule = self._sanitize_schedule(self.schedule)
+        except Exception as exc:
+            logger.debug("[amo] 日程清洗失败: %s" % exc)
         self.schedule_ctx = self.db.kv_get("schedule_ctx", {}) or {}
         if not isinstance(self.schedule_ctx, dict):
             self.schedule_ctx = {}
@@ -3730,7 +3734,7 @@ class HumanState:
         if merged:
             merged = self._strip_his_presence(self._hourly_schedule(merged), day)
             self.schedule[day] = merged
-            self.db.kv_set("schedule", self.schedule)
+            self.db.kv_set("schedule", self._sanitize_schedule(self.schedule))
             self.db.save_schedule(day, merged)
             logger.info("[amo] 出行日程对齐：今天在 %s（%s 回）" % (
                 city, "%02d:00" % int(trip.get("return_hour") or 22)))
@@ -3778,6 +3782,16 @@ class HumanState:
         ("你在等他", "你在家"),
         ("陪他", "自己待着"),
     )
+
+    def _sanitize_schedule(self, sched):
+        """任何写库/加载的日程都过一遍：他只能出现在聊天里。"""
+        try:
+            if isinstance(sched, dict):
+                return {str(day): self._strip_his_presence(items, str(day))
+                        for day, items in sched.items()}
+        except Exception:
+            return sched
+        return sched
 
     def _strip_his_presence(self, items, day=None):
         """把日程里凭空出现的他抹掉：他只能出现在聊天里。
@@ -3937,7 +3951,7 @@ class HumanState:
             if new_items == items:
                 return
             self.state.schedule[key] = new_items
-            self.db.kv_set("schedule", self.state.schedule)
+            self.db.kv_set("schedule", self._sanitize_schedule(self.state.schedule))
             self.db.save_schedule(key, new_items)
             logger.info("[amo] 按用户的话改了日程: %s" % change.get("activity"))
         except Exception as exc:
@@ -3974,7 +3988,7 @@ class HumanState:
                 self.db.kv_set("outfit_version", OUTFIT_VERSION)
             if hourly != existing:
                 self.schedule[today] = hourly
-                self.db.kv_set("schedule", self.schedule)
+                self.db.kv_set("schedule", self._sanitize_schedule(self.schedule))
                 self.db.save_schedule(today, hourly)
             hourly = self._normalize_items(
                 self._strip_his_presence(self._sync_trip_schedule(hourly, today), today))
@@ -4059,7 +4073,7 @@ class HumanState:
             self.schedule_ctx[today] = context
             self.db.kv_set("schedule_ctx", self.schedule_ctx)
         self.db.kv_set("schedule_version", SCHEDULE_VERSION)
-        self.db.kv_set("schedule", self.schedule)
+        self.db.kv_set("schedule", self._sanitize_schedule(self.schedule))
         self.db.save_schedule(today, items)
         if force:
             try:
@@ -4218,7 +4232,7 @@ class HumanState:
         merged = self._strip_his_presence(merged, today)
         self.schedule[today] = merged
         self.db.save_schedule(today, merged)
-        self.db.kv_set("schedule", self.schedule)
+        self.db.kv_set("schedule", self._sanitize_schedule(self.schedule))
         try:
             ctx = dict(self.schedule_ctx.get(today) or {})
             if ctx:
@@ -4292,7 +4306,7 @@ class HumanState:
         items = self._strip_his_presence(items, today)
         self.schedule[today] = items
         self.db.save_schedule(today, items)
-        self.db.kv_set("schedule", self.schedule)
+        self.db.kv_set("schedule", self._sanitize_schedule(self.schedule))
         try:
             self.db.clear_diaries(today)
         except Exception:
@@ -4342,7 +4356,7 @@ class HumanState:
         merged = self._strip_his_presence(merged, today)
         self.schedule[today] = merged
         self.db.save_schedule(today, merged)
-        self.db.kv_set("schedule", self.schedule)
+        self.db.kv_set("schedule", self._sanitize_schedule(self.schedule))
         try:
             ctx = dict(self.schedule_ctx.get(today) or {})
             if ctx:
@@ -6299,6 +6313,17 @@ class HumanCorePlugin(Star):
                 return word
         return ""
 
+    def _sanitize_schedule(self, sched):
+        """对外入口：真正的清洗在 HumanState 里，插件这边代调。"""
+        state = getattr(self, "state", None)
+        fn = getattr(state, "_sanitize_schedule", None)
+        if callable(fn):
+            try:
+                return fn(sched)
+            except Exception as exc:
+                logger.debug("[amo] 日程清洗失败: %s" % exc)
+        return sched
+
     async def _maybe_change_outfit(self, event, text):
         """中央集权：换装由 Amo 判、Amo 说，造型由生图插件执行。
 
@@ -8146,7 +8171,7 @@ class HumanCorePlugin(Star):
             items = self.state.schedule.get(day) or self.db.get_schedule(day) or []
             items = engine.assign(self.state._hourly_schedule(items), day)
             self.state.schedule[day] = items
-            self.db.kv_set("schedule", self.state.schedule)
+            self.db.kv_set("schedule", self._sanitize_schedule(self.state.schedule))
             self.db.save_schedule(day, items)
         except Exception as exc:
             logger.debug("[amo] 说话换装失败: %s" % exc)
@@ -10668,7 +10693,7 @@ class HumanCorePlugin(Star):
                 new_items = apply_sched_change(items, change, now)
                 if new_items and new_items != items:
                     self.state.schedule[key] = new_items
-                    self.db.kv_set("schedule", self.state.schedule)
+                    self.db.kv_set("schedule", self._sanitize_schedule(self.state.schedule))
                     self.db.save_schedule(key, new_items)
         except Exception as exc:
             logger.debug("[amo] 睡觉日程落盘失败: %s" % exc)
@@ -10770,7 +10795,7 @@ class HumanCorePlugin(Star):
                         break
                 if changed:
                     self.state.schedule[day] = items
-                    self.db.kv_set("schedule", self.state.schedule)
+                    self.db.kv_set("schedule", self._sanitize_schedule(self.state.schedule))
                     self.db.save_schedule(day, items)
             except Exception as exc:
                 logger.debug("[amo] 半夜醒来落日程失败: %s" % exc)
@@ -11015,7 +11040,7 @@ class HumanCorePlugin(Star):
         if new_items == items:
             return False
         self.state.schedule[key] = new_items
-        self.db.kv_set("schedule", self.state.schedule)
+        self.db.kv_set("schedule", self._sanitize_schedule(self.state.schedule))
         self.db.save_schedule(key, new_items)
         if uid:
             try:
@@ -12980,7 +13005,7 @@ class HumanCorePlugin(Star):
                     persona = ""
                 hit["outfit"] = outfits.for_activity(hit, key, persona)
             self.state.schedule[key] = items
-            self.db.kv_set("schedule", self.state.schedule)
+            self.db.kv_set("schedule", self._sanitize_schedule(self.state.schedule))
             self.db.save_schedule(key, items)
             logger.info("[amo] 日程已改: %s -> %s" % (hit.get("start"), hit.get("activity")))
             return "改好了，%s 那会儿我就在%s。" % (
@@ -17316,7 +17341,7 @@ class HumanCorePlugin(Star):
         items = self.outfits.assign(self.state._hourly_schedule(items), day)
         self.state.schedule[day] = items
         try:
-            self.db.kv_set("schedule", self.state.schedule)
+            self.db.kv_set("schedule", self._sanitize_schedule(self.state.schedule))
             self.db.save_schedule(day, items)
         except Exception:
             pass
