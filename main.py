@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.2.0"
+PLUGIN_VERSION = "8.3.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -2424,6 +2424,15 @@ class AmoDB:
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
+    def messages_since_umo(self, umo, since_ts, limit=200):
+        """按时间取某个会话的消息（新的在后）；判定「今天早上聊过没」用。"""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM messages WHERE umo=? AND created_at>=? ORDER BY id DESC LIMIT ?",
+                (str(umo), int(since_ts or 0), int(limit)),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
     # ---------- 自记账：插件内部调用（判分/润色/日记）不进 provider_stats ----------
 
     def record_tokens(self, kind, model, input_other, input_cached, output, ts=None):
@@ -2450,31 +2459,39 @@ class AmoDB:
 
     def usage_since(self, start_ts=None):
         """按 kind 汇总插件内部调用。"""
-        sql = ("SELECT kind, COUNT(*), SUM(input_other), SUM(input_cached), SUM(output) "
+        sql = ("SELECT kind, model, COUNT(*), SUM(input_other), SUM(input_cached), SUM(output) "
                "FROM token_usage")
         params = []
         if start_ts is not None:
             sql += " WHERE ts>=?"
             params.append(float(start_ts))
-        sql += " GROUP BY kind"
+        sql += " GROUP BY kind, model"
         total = {"calls": 0, "input_other": 0, "input_cached": 0, "output": 0,
                  "peak": {"calls": 0, "input_miss": 0, "input_cached": 0, "output": 0},
                  "idle": {"calls": 0, "input_miss": 0, "input_cached": 0, "output": 0},
-                 "by_kind": {}}
+                 "by_kind": {}, "by_model": {}}
         try:
             rows = self.conn.execute(sql, params).fetchall()
         except Exception:
             return total
-        for kind, calls, miss, cached, out in rows:
+        for kind, model, calls, miss, cached, out in rows:
             entry = {"calls": int(calls or 0), "input_other": int(miss or 0),
                      "input_cached": int(cached or 0), "output": int(out or 0)}
             entry["cost"] = usage_cost({
                 "peak": {"input_miss": entry["input_other"], "input_cached": entry["input_cached"],
                          "output": entry["output"], "calls": entry["calls"]},
             })
-            total["by_kind"][str(kind or "other")] = entry
+            bucket = total["by_kind"].setdefault(
+                str(kind or "other"),
+                {"calls": 0, "input_other": 0, "input_cached": 0, "output": 0, "cost": 0.0})
+            model_bucket = total["by_model"].setdefault(
+                str(model or ""),
+                {"calls": 0, "input_other": 0, "input_cached": 0, "output": 0})
             for key in ("calls", "input_other", "input_cached", "output"):
+                bucket[key] += entry[key]
+                model_bucket[key] += entry[key]
                 total[key] += entry[key]
+            bucket["cost"] += entry["cost"]
         total["cost"] = usage_cost({
             "peak": {"input_miss": total["input_other"], "input_cached": total["input_cached"],
                      "output": total["output"], "calls": total["calls"]},
@@ -11895,8 +11912,10 @@ class HumanCorePlugin(Star):
             system = "你是长期记忆整理器。只输出一段中文总结，不要标题、不要分点、不要时间戳。"
             prompt = (
                 "下面是昨天（" + (now - timedelta(days=1)).strftime("%Y-%m-%d") + "）两人的聊天记录。\n"
-                "请把它压成 2-4 句长期记忆：写清聊到的事、约定、他的状态变化（工作/身体/情绪/计划）。\n"
-                "每句必须带主体：写用户的用「他……」，写你自己的用「我……」；不要出现无主语的句子。\n"
+                "请把它压成 2-4 句长期记忆：写清聊到的事、约定、双方的状态变化（工作/情绪/计划）。\n"
+                "每句必须带主体：主人（他）的事用「他……」，你自己的事用「我……」；不要出现无主语的句子。\n"
+                "身体状态必须分清是谁的：你自己的生病、难受、疼、生理期一律写「我……」；\n"
+                "写成「他难受/他生病」等于说主人病了，不要把他的事和你的事弄混。\n"
                 "只写事实，不写「今天/昨天」这类相对时间；不要复述原话；不确定的不要编。\n\n"
                 + "\n".join(lines[-120:])
             )
@@ -12236,7 +12255,7 @@ class HumanCorePlugin(Star):
         except Exception:
             pass
 
-    def _ritual_pending(self, profile):
+    async def _ritual_pending(self, profile):
         """现在是否正处在「还没发」的问候时段。
 
         主动消息要让路：早晨 8 点主动搭话和早安问候撞在一起，就是
@@ -12260,20 +12279,39 @@ class HumanCorePlugin(Star):
                 continue
             if self.db.kv_get("ritual_" + kind + "_" + uid + "_" + today_str(), False):
                 continue
-            if not self._ritual_should_send(umos, kind):
+            if not await self._ritual_should_send_async(umos, kind, uid):
                 continue
             return True
         return False
 
-    def _ritual_should_send(self, umos, kind):
-        """今天这个问候还该不该发；QQ/飞书的近聊一起算，避免两边各问候一遍。"""
-        umos = list(umos) if isinstance(umos, (list, tuple, set)) else [umos]
-        rows = []
-        for item in umos:
-            try:
-                rows.extend(self._recent(item, 10))
-            except Exception:
-                pass
+    #: 每个问候从当天几点开始算「今天已经聊过」；不在表里的按 45 分钟活跃窗。
+    RITUAL_FROM_HOURS = {"morning": 5, "lunch": 11, "goodnight": 21}
+
+    def _ritual_lookback_start(self, kind):
+        """「今天这个时段已经聊过」的判定起点。
+
+        不能只看最后 10 条 / 45 分钟：06:52 他说「早上好」、07:10 收尾，
+        到 08:00 两道闸都过期，于是又问一遍「你醒了没」。所以按当天时段判。
+        """
+        now = now_ts()
+        hours = getattr(self, "RITUAL_FROM_HOURS", None) or {"morning": 5, "lunch": 11, "goodnight": 21}
+        hour = hours.get(str(kind))
+        if hour is None:
+            return now - max(5, self.cfg_int("ritual_skip_recent_minutes", 45)) * 60
+        try:
+            base = datetime.fromtimestamp(now).replace(
+                hour=int(hour), minute=0, second=0, microsecond=0)
+            start = base.timestamp()
+            if start > now:
+                # 凌晨 0-2 点的晚安算「昨天 21:00 起」；其他时段还没到点就从现在算
+                start = start - 24 * 3600 if str(kind) == "goodnight" else now
+            return start
+        except Exception:
+            return now - max(5, self.cfg_int("ritual_skip_recent_minutes", 45)) * 60
+
+    def _ritual_judge_rows(self, rows, kind, since):
+        """按已经取到的消息判断今天这个问候还发不发；QQ/飞书一起算。"""
+        rows = [row for row in (rows or []) if to_float(row.get("created_at"), 0) >= since]
         rows.sort(key=lambda row: to_float(row.get("created_at"), 0))
         now = now_ts()
         recent_gap = max(5, self.cfg_int("ritual_skip_recent_minutes", 45)) * 60
@@ -12286,14 +12324,50 @@ class HumanCorePlugin(Star):
         # 只认「他」问候过：她自己那句「吃了没 / 晚安」多半是主动消息或追问，
         # 算进来会把当天的问候整段吃掉（午饭问候时有时无就是这么来的）。
         texts = [str(row.get("content") or "") for row in rows if str(row.get("role") or "") == "user"]
-        joined = "\n".join(texts[-10:])
+        # 不再只看最后 10 条：早上聊了几十句之后，最早那句「早」会被挤出去。
+        joined = "\n".join(texts)
         if kind == "morning":
-            return not bool(re.search(r"(?:^|\s)早(?:\s|$|[!！。~～])|早安|早上好|早上好呀|我醒了|起床了|还没起来吗|醒了没", joined))
+            return not bool(re.search(r"(?:^|\s)早(?:\s|$|[，,、!！。~～])|早安|早上好|早上好呀|我醒了|起床了|还没起来吗|醒了没", joined))
         if kind == "goodnight":
             return not bool(re.search(r"晚安|睡了|睡觉|先睡|去睡|早点休息", joined))
         if kind == "lunch":
             return not bool(re.search(r"午饭|中午吃|吃啥|吃什么|吃饭|吃了没|吃了吗", joined))
         return True
+
+    def _ritual_should_send(self, umos, kind):
+        """同步版：只读本地缓存表/内存缓冲（拿不到记忆库时的兜底）。"""
+        umos = list(umos) if isinstance(umos, (list, tuple, set)) else [umos]
+        since = self._ritual_lookback_start(kind)
+        rows = []
+        for item in umos:
+            try:
+                rows.extend(self.db.messages_since_umo(item, since, 200))
+            except Exception:
+                try:
+                    rows.extend(self._recent(item, 10))
+                except Exception:
+                    pass
+        return self._ritual_judge_rows(rows, kind, since)
+
+    async def _ritual_should_send_async(self, umos, kind, uid=""):
+        """真正发送前用这个：消息真相在记忆库。
+
+        插件本地的 messages 表最后一条停在 11-09（容量/迁移后不再写入），
+        只看它会永远判成「今天还没聊过」，于是 8 点又问一遍「醒了没」。
+        """
+        since = self._ritual_lookback_start(kind)
+        uid = str(uid or "")
+        if uid:
+            try:
+                rows = await self._data_call(
+                    "messages_since", self._data_bot_id(), uid, int(since), 400)
+            except Exception as exc:
+                logger.debug("[amo] 问候判定取聊天失败: %s" % exc)
+                rows = []
+            if rows:
+                # 和里程碑同一口径：群聊内容不进私聊判定
+                return self._ritual_judge_rows(_private_rows(rows), kind, since)
+        return self._ritual_should_send(umos, kind)
 
     async def _maybe_rituals(self):
         if not self.cfg_bool("ritual_enabled", True):
@@ -12328,7 +12402,7 @@ class HumanCorePlugin(Star):
                     continue
                 if self._recent_greeting(uid, self.cfg_int("ritual_min_gap_minutes", 30)):
                     continue
-                if not self._ritual_should_send(umos, kind):
+                if not await self._ritual_should_send_async(umos, kind, uid):
                     continue
                 targets = _greeting_targets(
                     umos,
@@ -12749,7 +12823,7 @@ class HumanCorePlugin(Star):
         daily_max = max(0, self.cfg_int("proactive_daily_max", 3))
         for profile in profiles:
             uid = str(profile.get("uid") or "")
-            if self._ritual_pending(profile):
+            if await self._ritual_pending(profile):
                 continue
             if self._recent_greeting(uid, self.cfg_int("proactive_after_greeting_minutes", 60)):
                 continue
@@ -14582,6 +14656,10 @@ class HumanCorePlugin(Star):
                 usage["all_input"] = (int(usage.get("input_miss") or 0) + int(usage.get("input_cached") or 0)
                                       + int(internal["input_other"]) + int(internal["input_cached"]))
                 usage["all_output"] = int(usage.get("output") or 0) + int(internal["output"])
+                # 面板要能一眼看到「一共跑了多少」，不能只给主回复那一半
+                usage["all_total"] = int(usage["all_input"]) + int(usage["all_output"])
+                usage["internal_total"] = (int(internal["input_other"]) + int(internal["input_cached"])
+                                            + int(internal["output"]))
                 usage["all_cost"] = float(usage.get("cost") or 0) + float(internal["cost"])
                 result[label] = usage
             return result
@@ -14598,13 +14676,19 @@ class HumanCorePlugin(Star):
         today_by_model = {}
         for entry in (data.get("today", {}) or {}).get("by_model", []) or []:
             today_by_model[str(entry.get("model") or "")] = entry
+        # 判分/润色/摘要这些内部调用也吃同一份额度，模型卡片不能只算主回复
+        internal_by_model = ((data.get("today") or {}).get("internal") or {}).get("by_model") or {}
         for item in providers:
             item["judge"] = bool(judge_id) and item["id"] == judge_id
             item["using"] = bool(using_id) and item["id"] == using_id
             stats = today_by_model.get(item["model"]) or today_by_model.get(item["id"]) or {}
             tokens = int(stats.get("input_miss") or 0) + int(stats.get("input_cached") or 0) + int(stats.get("output") or 0)
-            item["today_tokens"] = tokens
-            item["today_calls"] = int(stats.get("calls") or 0)
+            extra = internal_by_model.get(str(item.get("model") or "")) or {}
+            extra_tokens = (int(extra.get("input_other") or 0) + int(extra.get("input_cached") or 0)
+                            + int(extra.get("output") or 0))
+            item["today_tokens"] = tokens + extra_tokens
+            item["today_internal_tokens"] = extra_tokens
+            item["today_calls"] = int(stats.get("calls") or 0) + int(extra.get("calls") or 0)
             item["today_cost"] = float(stats.get("cost") or 0) if isinstance(stats.get("cost"), (int, float)) else 0.0
         if self.cfg_bool("usage_balance_enabled", True) and self.cfg_bool("deepseek_balance_enabled", True):
             balances = await self._provider_balances_cached(providers)

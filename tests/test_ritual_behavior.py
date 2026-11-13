@@ -35,6 +35,9 @@ WANTED = {
     "_mark_greeting",
     "_ritual_pending",
     "_ritual_should_send",
+    "_ritual_should_send_async",
+    "_ritual_lookback_start",
+    "_ritual_judge_rows",
     "_ritual_in_window",
     "_maybe_rituals",
 }
@@ -287,30 +290,30 @@ class RitualBehaviorTests(unittest.TestCase):
     def test_ritual_pending_true_before_greeting(self):
         fake = make_self(self.methods)
         self.patch_globals(fake._ritual_pending.__func__)
-        self.assertTrue(fake._ritual_pending(fake.profile()))
+        self.assertTrue(asyncio.run(fake._ritual_pending(fake.profile())))
 
     def test_ritual_pending_false_for_non_lover(self):
         fake = make_self(self.methods, profiles=[FakeSelf.profile(relation="熟识")])
         self.patch_globals(fake._ritual_pending.__func__)
-        self.assertFalse(fake._ritual_pending(fake.profile(relation="熟识")))
+        self.assertFalse(asyncio.run(fake._ritual_pending(fake.profile(relation="熟识"))))
 
     def test_ritual_pending_false_without_any_channel(self):
         profile = FakeSelf.profile(private_umo="")
         fake = make_self(self.methods, profiles=[profile], channels={})
         self.patch_globals(fake._ritual_pending.__func__)
-        self.assertFalse(fake._ritual_pending(profile))
+        self.assertFalse(asyncio.run(fake._ritual_pending(profile)))
 
     def test_ritual_pending_false_after_greeting(self):
         fake = make_self(self.methods)
         self.patch_globals(fake._ritual_pending.__func__)
         fake.db.kv_set("ritual_morning_%s_%s" % (UID, TODAY), True)
-        self.assertFalse(fake._ritual_pending(fake.profile()))
+        self.assertFalse(asyncio.run(fake._ritual_pending(fake.profile())))
 
     def test_ritual_pending_false_within_gap(self):
         fake = make_self(self.methods)
         self.patch_globals(fake._ritual_pending.__func__)
         fake.db.kv_set("greeting_last:%s" % UID, {"kind": "lunch", "umo": QQ, "ts": NOW - 5 * 60})
-        self.assertFalse(fake._ritual_pending(fake.profile()))
+        self.assertFalse(asyncio.run(fake._ritual_pending(fake.profile())))
 
     def test_ritual_should_send_sees_both_platforms(self):
         fake = make_self(self.methods, recents={

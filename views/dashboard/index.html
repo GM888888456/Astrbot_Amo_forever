@@ -554,7 +554,7 @@
         <div class="row between">
           <div>
             <div class="label">对话用量</div>
-            <div class="sub" id="usageRange">主回复读 AstrBot 统计 · 判分/润色/日记读插件自记账</div>
+            <div class="sub" id="usageRange">合计 = 主回复 + 插件内部（判分/润色/摘要/日程）。AstrBot 后台只统计主回复，真实跑量看下面的「今日合计」</div>
           </div>
           <button class="tab" id="usageRefresh" type="button">刷新</button>
         </div>
@@ -1897,9 +1897,9 @@
         setText("usageCache", (rate * 100).toFixed(1) + "%");
         const bar = document.getElementById("usageCacheBar");
         if (bar) bar.style.width = Math.max(2, Math.min(100, rate * 100)) + "%";
-        setText("usageWeek", "近 7 天 " + ((Number(week.cache_rate || 0)) * 100).toFixed(1) + "%");
+        setText("usageWeek", "近 7 天 " + usageNum(week.all_total || ((week.all_input || 0) + (week.all_output || 0))) + " tokens · 缓存 " + ((Number(week.cache_rate || 0)) * 100).toFixed(1) + "%");
         setText("usageCost", money(today.cost));
-        setText("usageCostSub", "近 7 天 " + money(week.cost) + " · 累计 " + money(total.cost));
+        setText("usageCostSub", "近 7 天 " + money(week.all_cost || week.cost) + " · 累计 " + money(total.all_cost || total.cost) + "（含插件内部）");
         const balance = data.balance || {};
         if (balance.ok) {
           setText("balanceValue", (balance.currency === "USD" ? "$" : "¥") + Number(balance.amount || 0).toFixed(2));
@@ -1918,15 +1918,15 @@
           .sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0))
           .map(([key, value]) => (kindLabel[key] || key) + " " + (value.calls || 0) + " 次/"
             + usageNum((value.input_other || 0) + (value.input_cached || 0) + (value.output || 0)));
-        setText("usageInternal", "插件内部（判分/润色/日记）：" +
-          (internal.calls || 0) + " 次 · 输入 " +
-          usageNum((internal.input_other || 0) + (internal.input_cached || 0)) +
-          " · 输出 " + usageNum(internal.output || 0) + " · " + money(internal.cost));
-        setText("usageTotal", "合计（主回复 + 内部）：" + (today.all_calls || 0) + " 次 · "
-          + money(today.all_cost || 0));
-        if (kinds.length) {
-          setText("usageInternal", "插件内部：" + kinds.join(" · ") + " · 共 " + money(internal.cost));
-        }
+        const internalTokens = (internal.input_other || 0) + (internal.input_cached || 0) + (internal.output || 0);
+        setText("usageInternal", "插件内部自己跑的（" + (internal.calls || 0) + " 次 · "
+          + usageNum(internalTokens) + " tokens · " + money(internal.cost) + "）："
+          + (kinds.length ? kinds.join(" · ") : "今天还没有"));
+        const allIn = Number(today.all_input || 0);
+        const allOut = Number(today.all_output || 0);
+        setText("usageTotal", "今日合计（主回复 + 插件内部）：" + (today.all_calls || 0) + " 次 · 输入 "
+          + usageNum(allIn) + " · 输出 " + usageNum(allOut) + " · 共 "
+          + usageNum(today.all_total || (allIn + allOut)) + " tokens · " + money(today.all_cost || 0));
         const models = Array.isArray(today.by_model) ? today.by_model : [];
         setText("usageModels", models.length
           ? "今日按模型：" + models.map((item) => (item.model || "?") + " " +

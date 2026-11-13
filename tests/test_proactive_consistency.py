@@ -77,6 +77,13 @@ class FakePlugin:
     def _recent(self, umo, limit=10):
         return list(self.rows.get(umo, []))
 
+    def _ritual_lookback_start(self, kind):
+        # 测试里的行都是 1 小时前，判定起点给 2 小时前，别让时间窗把行滤掉
+        return main.now_ts() - 7200
+
+    def _ritual_judge_rows(self, rows, kind, since):
+        return HumanCorePlugin._ritual_judge_rows(self, rows, kind, since)
+
     async def _send_to_umo(self, umo, text, quote_id=None, group=False):
         self.sent.append((umo, text))
         return True
