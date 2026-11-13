@@ -20,6 +20,11 @@ import zlib
 # 场景标签：和 outfit_engine 的 scene 一一对应
 SCENES = ("work", "home", "casual", "out", "formal", "sport", "sleep", "beach")
 
+#: 分件槽位：上衣/裤子/裙子/JK 格裙/JK 衬衣/袜子/鞋/配饰
+SLOTS = ("top", "bottom", "dress", "jk_skirt", "jk_shirt", "socks", "shoes", "accessory")
+SLOT_LABELS = {"top": "上衣", "bottom": "裤子", "dress": "裙子", "jk_skirt": "JK 格裙",
+               "jk_shirt": "JK 衬衣", "socks": "袜子", "shoes": "鞋", "accessory": "配饰"}
+
 SCENE_LABELS = {
     "work": "上班",
     "home": "在家",
@@ -45,6 +50,42 @@ SCENE_HINTS = (
 MIN_NAME = 2
 MAX_NAME = 40
 MAX_ITEMS = 200
+
+
+def scenes_for_slot(slot: str, style: str = "") -> list[str]:
+    """分件 → 适合的场景（JK/裙子偏校园日常，鞋袜配饰全天可用）。"""
+    slot = str(slot or "")
+    style = str(style or "")
+    if slot in ("shoes", "socks", "accessory"):
+        return ["work", "home", "casual", "out", "formal", "sport"]
+    if slot.startswith("jk") or "校园" in style:
+        return ["casual", "out"]
+    if slot == "dress":
+        return ["out", "formal", "casual"]
+    return ["work", "casual", "out", "home"]
+
+
+def build_items_from_catalog(rows) -> list[dict]:
+    """把市场目录的服装行转成衣柜条目（带 slot / scenes）。"""
+    items = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = clean_name(row.get("name"))
+        slot = str(row.get("slot") or "").strip()
+        if not name or slot not in SLOTS:
+            continue
+        items.append({
+            "id": uuid.uuid4().hex[:10],
+            "name": name,
+            "slot": slot,
+            "scenes": scenes_for_slot(slot, row.get("style")),
+            "gender": "女",
+            "enabled": True,
+            "note": "市场目录",
+            "created": time.time(),
+        })
+    return items[:MAX_ITEMS]
 
 
 def clean_name(text):
@@ -145,6 +186,31 @@ class Wardrobe:
             if item["name"] == target:
                 return item
         return {}
+
+    def replace_all(self, items):
+        """整库替换（按市场目录重建衣柜时用）；返回替换后的条数。"""
+        rows = []
+        for row in items or []:
+            if not isinstance(row, dict):
+                continue
+            name = clean_name(row.get("name"))
+            if not name:
+                continue
+            item = {
+                "id": str(row.get("id") or uuid.uuid4().hex[:10]),
+                "name": name,
+                "slot": str(row.get("slot") or ""),
+                "scenes": list(row.get("scenes") or guess_scenes(name)),
+                "gender": str(row.get("gender") or "女"),
+                "enabled": bool(row.get("enabled", True)),
+                "note": str(row.get("note") or ""),
+                "created": float(row.get("created") or time.time()),
+            }
+            rows.append(item)
+        with self.lock:
+            self._items = rows[:MAX_ITEMS]
+            self._save()
+        return len(self._items)
 
     def add(self, name, scenes=None, gender="通用", note=""):
         name = clean_name(name)

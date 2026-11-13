@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import random
+
 import re
 import time
 import zlib
@@ -264,6 +266,55 @@ class OutfitEngine:
         except Exception:
             return 0
 
+    def _slot_items(self):
+        """衣柜里带 slot 的条目；没有就走旧的整件挑。"""
+        try:
+            rows = [row for row in (self.wardrobe.items() or [])
+                    if row.get("slot") and row.get("enabled", True)]
+        except Exception:
+            rows = []
+        return rows
+
+    def _compose(self, scene: str, day, gender: str) -> str:
+        """按槽位拼一套：裙子优先整件，JK 用衬衣+格裙，其余上衣+裤子；再配鞋袜。"""
+        rows = self._slot_items()
+        if not rows:
+            return self._pick(gender, scene, day, "day")
+        chooser = random.Random("amo-look:%s:%s" % (str(day), scene))
+
+        def pick_slot(slot, pool=None):
+            candidates = [row for row in rows
+                          if row.get("slot") == slot
+                          and row.get("enabled", True)
+                          and (not pool or any(sc in (row.get("scenes") or []) for sc in pool))]
+            return chooser.choice(candidates)["name"] if candidates else ""
+
+        if scene == "sleep":
+            return pick_slot("dress") or pick_slot("top") or "纯棉睡衣"
+        if scene == "sport":
+            top = pick_slot("top", ["sport"]) or pick_slot("top")
+            bottom = pick_slot("bottom", ["sport"]) or pick_slot("bottom")
+            shoes = pick_slot("shoes") or ""
+            socks = pick_slot("socks") or ""
+            return "，".join(x for x in (top, bottom, socks, shoes) if x)
+        if scene in ("formal", "out") and chooser.random() < 0.5:
+            dress = pick_slot("dress")
+            if dress:
+                shoes = pick_slot("shoes")
+                return "，".join(x for x in (dress, shoes) if x)
+        if scene == "casual" and chooser.random() < 0.35:
+            shirt = pick_slot("jk_shirt")
+            skirt = pick_slot("jk_skirt")
+            if shirt and skirt:
+                socks = pick_slot("socks") or ""
+                shoes = pick_slot("shoes") or ""
+                return "，".join(x for x in (shirt, skirt, socks, shoes) if x)
+        top = pick_slot("top")
+        bottom = pick_slot("bottom")
+        socks = pick_slot("socks") or ""
+        shoes = pick_slot("shoes") or ""
+        return "，".join(x for x in (top, bottom, socks, shoes) if x)
+
     def assign(self, items, day, persona=""):
         """给日程写 `outfit`。
 
@@ -278,10 +329,10 @@ class OutfitEngine:
             return items
         gender = self.gender(persona)
         base_scene = self.day_scene(items)
-        pair = self._pick(gender, base_scene, day, "day")
-        backup = self._pick(gender, base_scene, day, "day-2")
-        homewear = self._pick(gender, "home", day, "home")
-        sleepwear = self._pick(gender, "sleep", day, "sleep")
+        pair = self._compose(base_scene, day, gender)
+        backup = self._compose(base_scene, "%s-b" % day, gender)
+        homewear = self._compose("home", day, gender)
+        sleepwear = self._compose("sleep", day, gender)
         variant = 0
         for item in items:
             if not isinstance(item, dict):

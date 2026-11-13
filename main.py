@@ -55,11 +55,14 @@ from astrbot.api import logger
 # ---- 画图 / 照片分享（本地功能，接万象画卷 OmniDraw）----
 try:
     from .wardrobe import Wardrobe, SCENE_LABELS
+    from .wardrobe import build_items_from_catalog as build_wardrobe_items
 except Exception:  # 直接按文件加载时
     try:
         from wardrobe import Wardrobe, SCENE_LABELS  # type: ignore
+        from wardrobe import build_items_from_catalog as build_wardrobe_items  # type: ignore
     except Exception:
         Wardrobe = None
+        build_wardrobe_items = None
         SCENE_LABELS = {}
 
 try:
@@ -530,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.9"
+PLUGIN_VERSION = "9.1.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -6361,6 +6364,10 @@ class HumanCorePlugin(Star):
             """所有插件加载完：数据插件要是比 amo 后加载，这里补做一次同步。"""
             try:
                 await self._ensure_ready()
+                try:
+                    self._reseed_wardrobe_from_market()
+                except Exception as exc:
+                    logger.debug("[amo] 衣柜重建失败: %s" % exc)
                 if not self._data_synced and self._data_connected():
                     await self._sync_with_data_plugin()
             except Exception as exc:
@@ -7652,6 +7659,57 @@ class HumanCorePlugin(Star):
             return dict(self.state.current_activity() or {})
         except Exception:
             return {}
+
+    def _market_plugin(self):
+        """找市场插件（Astrbot_Amo_Marketplace）；没装返回 None。"""
+        names = ("Astrbot_Amo_Marketplace", "astrbot_plugin_amo_marketplace", "amo_marketplace")
+        try:
+            for name in names:
+                try:
+                    meta = self.context.get_registered_star(name)
+                except Exception:
+                    meta = None
+                for attr in ("star_cls", "instance", "star", "plugin"):
+                    star = getattr(meta, attr, None) if meta is not None else None
+                    if star is not None and not isinstance(star, type) and hasattr(star, "outfits"):
+                        return star
+        except Exception:
+            pass
+        try:
+            for meta in self.context.get_all_stars():
+                marker = ((getattr(meta, "name", "") or "") + " "
+                          + (getattr(meta, "module_path", "") or "")).lower()
+                if "marketplace" not in marker:
+                    continue
+                for attr in ("star_cls", "instance", "star", "plugin"):
+                    star = getattr(meta, attr, None)
+                    if star is not None and not isinstance(star, type) and hasattr(star, "outfits"):
+                        return star
+        except Exception:
+            pass
+        return None
+
+    def _reseed_wardrobe_from_market(self) -> None:
+        """衣柜按市场目录重建（分件、100+）；只在版本标记不对时做一次，旧衣服全清。"""
+        market = self._market_plugin()
+        if market is None or self.wardrobe is None:
+            return
+        try:
+            if self.db.kv_get("wardrobe_seed", "") == "slots-v1":
+                return
+        except Exception:
+            pass
+        rows = market.outfits() if callable(getattr(market, "outfits", None)) else []
+        items = build_wardrobe_items(rows) if build_wardrobe_items is not None else []
+        if not items:
+            return
+        try:
+            self.wardrobe.replace_all(items)
+        except Exception as exc:
+            logger.warning("[amo] 衣柜重建失败: %s" % exc)
+            return
+        self.db.kv_set("wardrobe_seed", "slots-v1")
+        logger.info("[amo] 衣柜已按市场目录重建：%d 件（上衣/裤子/裙子/JK/袜子/鞋/配饰）" % len(items))
 
     def _image_plugin(self):
         """找生图插件实例；没装/没启用就返回 None。"""
