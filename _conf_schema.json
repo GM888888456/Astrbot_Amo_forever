@@ -1575,5 +1575,23 @@
     "description": "【日程】到达后保持多久（小时）",
     "default": 3,
     "hint": "到达目的地后这段时间的行程跟着改成在那儿；睡觉和吃饭那两格不动。"
+  },
+  "sleep_accept_after": {
+    "type": "int",
+    "description": "【睡眠】几点之后答应去睡",
+    "default": 23,
+    "hint": "他让她睡，只有这个点之后（或凌晨）才答应；之前会说还早。"
+  },
+  "sleep_wake_hour": {
+    "type": "int",
+    "description": "【睡眠】几点醒",
+    "default": 7,
+    "hint": "睡下之后这个点自动醒；醒来会写进日程和当天日记。"
+  },
+  "sleep_night_wake_chance": {
+    "type": "float",
+    "description": "【睡眠】半夜醒来的概率",
+    "default": 0.25,
+    "hint": "0~1。醒了会带一个原因（口渴/做梦/热醒/想他…），写进日程和日记，过一会儿再睡回去。"
   }
 }

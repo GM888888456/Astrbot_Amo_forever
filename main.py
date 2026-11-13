@@ -73,10 +73,29 @@ except Exception:  # 直接按文件加载时
 try:
     from .draw_engine import DrawEngine
     from .photo_engine import PhotoEngine
+    from .sleep_cycle import (
+        GO_SLEEP_WORDS,
+        WAKE_WORDS,
+        SleepAnswer,
+        SleepCycle,
+        SleepPhase,
+        reason_for,
+    )
 except ImportError:  # 直接按文件加载时
     try:
         from draw_engine import DrawEngine
         from photo_engine import PhotoEngine
+        try:
+            from sleep_cycle import (
+                GO_SLEEP_WORDS,
+                WAKE_WORDS,
+                SleepAnswer,
+                SleepCycle,
+                SleepPhase,
+                reason_for,
+            )
+        except ImportError:  # pragma: no cover
+            SleepCycle = None
     except Exception:  # 没装/导入失败时不影响主脑启动
         DrawEngine = None
         PhotoEngine = None
@@ -511,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.9.0"
+PLUGIN_VERSION = "8.10.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -5514,6 +5533,17 @@ class HumanCorePlugin(Star):
                 self.draw = DrawEngine(self)
             except Exception as exc:
                 logger.warning("[amo] 画图引擎初始化失败: %s" % exc)
+        self.sleep = None
+        if SleepCycle is not None:
+            try:
+                self.sleep = SleepCycle(
+                    self.db,
+                    accept_after=self.cfg_int("sleep_accept_after", 23),
+                    wake_hour=self.cfg_int("sleep_wake_hour", 7),
+                    night_wake_chance=self.cfg_float("sleep_night_wake_chance", 0.25),
+                )
+            except Exception as exc:
+                logger.warning("[amo] 睡眠状态机初始化失败: %s" % exc)
         self.photo = None
         if PhotoEngine is not None:
             try:
@@ -9992,6 +10022,14 @@ class HumanCorePlugin(Star):
             await self._ensure_ready()
             try:
                 raw_text = (event.message_str or "").strip()
+                if raw_text and await self._maybe_go_sleep(event, raw_text):
+                    return
+                if raw_text and self._sleeping_now():
+                    if not any(word in raw_text for word in WAKE_WORDS):
+                        # 睡着了：群里私聊都不回，等她第二天醒
+                        event.stop_event()
+                        return
+                    await self._wake_from_sleep(event, raw_text)
                 if raw_text and not raw_text.startswith(("/", "／")):
                     if await self._maybe_user_move(event, raw_text):
                         return
@@ -10074,6 +10112,166 @@ class HumanCorePlugin(Star):
         except Exception:
             return "收了你的%s %s，我记着欠你 %.0f。" % (
                 kind, amount_text, float(owed or 0))
+
+    def _sleeping_now(self) -> bool:
+        try:
+            return bool(self.sleep is not None and self.sleep.is_asleep(_clock_now()))
+        except Exception:
+            return False
+
+    def _is_owner(self, event) -> bool:
+        try:
+            return bool(self.draw is not None and self.draw.is_owner(event))
+        except Exception:
+            return False
+
+    async def _maybe_go_sleep(self, event, text) -> bool:
+        """他让她去睡：晚上十一点后答应，之前会说还早；睡着后不再回消息。"""
+        if self.sleep is None or not text:
+            return False
+        if not event.is_private_chat() or not self._is_owner(event):
+            return False
+        if not any(word in text for word in GO_SLEEP_WORDS):
+            return False
+        now = _clock_now()
+        if self.sleep.is_asleep(now):
+            return False
+        answer = self.sleep.answer(now)
+        uid = self._primary_uid()
+        if answer is SleepAnswer.TOO_EARLY:
+            line = "现在才 %s，还早呢，我再玩会儿。" % now.strftime("%H:%M")
+            await self.context.send_message(event.unified_msg_origin, line)
+            try:
+                event.stop_event()
+            except Exception:
+                pass
+            return True
+
+        self.sleep.go_to_sleep(now)
+        try:
+            key = now.date().isoformat()
+            items = self.state.schedule.get(key) or self.db.get_schedule(key) or []
+            if items and apply_sched_change is not None:
+                change = {"activity": "睡觉", "place": self.state._home_name(),
+                          "category": "sleep"}
+                new_items = apply_sched_change(items, change, now)
+                if new_items and new_items != items:
+                    self.state.schedule[key] = new_items
+                    self.db.kv_set("schedule", self.state.schedule)
+                    self.db.save_schedule(key, new_items)
+        except Exception as exc:
+            logger.debug("[amo] 睡觉日程落盘失败: %s" % exc)
+        if uid:
+            try:
+                await self._write_memory_checked(
+                    uid, "他让我去睡，我答应了（%s 睡，%s 起）"
+                    % (now.strftime("%H:%M"), self.sleep.load().get("wake_at") or ""),
+                    kind="event", tier=0)
+            except Exception:
+                pass
+        try:
+            self.db.save_diary(now.date().isoformat(), now.strftime("%H:00"),
+                               "他说该睡了，我关了灯躺下。")
+        except Exception:
+            pass
+        line = "好，我去睡了。晚安，别熬太晚。"
+        await self.context.send_message(event.unified_msg_origin, line)
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+        return True
+
+    async def _wake_from_sleep(self, event, text) -> None:
+        """他叫醒她：状态改成醒着，记一笔，然后正常聊天。"""
+        now = _clock_now()
+        reason = self.sleep.today_woke_reason()
+        self.sleep.wake_up(now, woke_early=True)
+        uid = self._primary_uid()
+        if uid:
+            try:
+                await self._write_memory_checked(
+                    uid, "他把我叫醒了（%s）" % now.strftime("%H:%M"),
+                    kind="event", tier=0)
+            except Exception:
+                pass
+        try:
+            self.db.save_diary(now.date().isoformat(), now.strftime("%H:00"),
+                               "他喊我起床，我迷迷糊糊应了一声。")
+        except Exception:
+            pass
+        logger.info("[amo] 被他叫醒（夜里原因：%s）" % (reason.value if reason else "无"))
+
+    async def _sleep_tick(self) -> None:
+        """每分钟看一次：该起就起；半夜可能醒一次，记进日程和日记。"""
+        if self.sleep is None:
+            return
+        now = _clock_now()
+        if not self.sleep.is_asleep(now):
+            return
+        state = self.sleep.load()
+        wake_day = str(state.get("wake_day") or "")
+        wake_at = str(state.get("wake_at") or "")
+        today = now.date().isoformat()
+        hhmm = now.strftime("%H:%M")
+        if (today > wake_day) or (today == wake_day and wake_at and hhmm >= wake_at):
+            reason = self.sleep.today_woke_reason()
+            self.sleep.wake_up(now)
+            day = now.date().isoformat()
+            text = "早上 %s 醒了。" % hhmm
+            if reason is not None:
+                text = "早上 %s 醒来。昨晚%s。" % (hhmm, reason_for(reason))
+            uid = self._primary_uid()
+            if uid:
+                try:
+                    await self._write_memory_checked(uid, text, kind="event", tier=0)
+                except Exception:
+                    pass
+            try:
+                self.db.save_diary(day, now.strftime("%H:00"), text)
+            except Exception:
+                pass
+            logger.info("[amo] 睡醒了：%s" % text)
+            return
+
+        reason = self.sleep.maybe_night_wake(now)
+        if reason is not None:
+            day = now.date().isoformat()
+            text = reason_for(reason)
+            uid = self._primary_uid()
+            if uid:
+                try:
+                    await self._write_memory_checked(
+                        uid, "半夜 %s %s" % (hhmm, text), kind="event", tier=0)
+                except Exception:
+                    pass
+            try:
+                items = self.state.schedule.get(day) or self.db.get_schedule(day) or []
+                hour = now.strftime("%H:00")
+                changed = False
+                for index, item in enumerate(items):
+                    if str(item.get("start") or "") == hour:
+                        row = dict(item)
+                        row["activity"] = "半夜醒来：" + text
+                        row["category"] = "rest"
+                        items[index] = row
+                        changed = True
+                        break
+                if changed:
+                    self.state.schedule[day] = items
+                    self.db.kv_set("schedule", self.state.schedule)
+                    self.db.save_schedule(day, items)
+            except Exception as exc:
+                logger.debug("[amo] 半夜醒来落日程失败: %s" % exc)
+            try:
+                existing = self.db.get_diary(day, hour) or ""
+                self.db.save_diary(day, hour,
+                                   (existing + "；" if existing else "") +
+                                   "半夜%s，躺了一会儿又睡过去了。" % text)
+            except Exception:
+                pass
+            logger.info("[amo] 半夜醒来：%s" % text)
+            self.sleep.back_to_sleep(now)
 
     async def _maybe_user_move(self, event, text) -> bool:
         """他说「回来吧 / 去超市 / 别逛了」：她自己掂量愿不愿意，愿意就**先走过去**。
@@ -12381,6 +12579,10 @@ class HumanCorePlugin(Star):
             self._last_profile_sync = now_ts()
             self._spawn(self._sync_profiles_to_data())
             self._spawn(self._sync_relations_from_data())
+        try:
+            await self._sleep_tick()
+        except Exception as exc:
+            logger.debug("[amo] 睡眠推进失败: %s" % exc)
         self.state.decay_mood()
         if self.state.last_daily != today_str():
             self.state.daily_tick()
