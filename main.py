@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.5.3"
+PLUGIN_VERSION = "8.5.4"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -8175,7 +8175,8 @@ class HumanCorePlugin(Star):
         if texts:
             menu = self._food_menu()
             if menu:
-                texts.append("【现在能吃的】" + menu + "。要用 amo_eat 工具去买或去做；按你人格里的口味挑，别默认某一道菜，别自己编价格。")
+                texts.append("【现在能吃的】" + menu + "。要用 amo_eat 工具去买或去做；按你人格里的口味挑，别默认某一道菜，别自己编价格。"
+                             "想做饭又拿不准时用 method=auto：会按今日菜价比较做饭和外卖，外卖没有的菜就自己做。")
         return ("\n" + "\n".join(texts)) if texts else ""
 
     async def _maybe_hunger_sick(self) -> None:
@@ -10652,6 +10653,29 @@ class HumanCorePlugin(Star):
             "别硬撑着说没事。" % (status, note or "浑身不舒服")
         )
 
+    async def notify_repay(self, amount, remaining=0.0) -> bool:
+        """金融自动还款后，主动发一条私聊：转账记录 + 一句人话。"""
+        umo = self._last_umo or self._first_private_umo()
+        if not umo:
+            return False
+        try:
+            amount = float(amount or 0)
+            remaining = float(remaining or 0)
+        except Exception:
+            return False
+        if amount <= 0:
+            return False
+        text = "（转账）¥%.2f\n老公，我还你钱啦～" % amount
+        text += ("还欠你 ¥%.2f。" % remaining) if remaining > 0 else "还清啦！"
+        try:
+            await self.context.send_message(umo, text)
+        except Exception as exc:
+            logger.debug("[amo] 还款消息发送失败: %s" % exc)
+            return False
+        self._sync_finance()
+        logger.info("[amo] 已发还款消息：%.2f，剩 %.2f" % (amount, remaining))
+        return True
+
     def _invest_line(self) -> str:
         """她知道自己有股票、持了什么、今天赚赔——不然用户让她买，她完全不知道有这回事。"""
         inv = getattr(self.state, "invest", None) or {}
@@ -11230,12 +11254,12 @@ class HumanCorePlugin(Star):
             logger.debug("[amo] 主动分享入口异常: %s" % exc)
 
     @filter.llm_tool(name="amo_eat")
-    async def amo_eat(self, event, dish: str = "", method: str = "order") -> str:
+    async def amo_eat(self, event, dish: str = "", method: str = "auto") -> str:
         """吃东西、喝水、买菜。饿了想买点吃的、想自己做饭、想喝点什么，都走这个工具。
 
         Args:
             dish(string): 吃什么/喝什么/买什么，按你人格里的口味和当下心情从菜单里挑（别默认某一道菜，也别总点同一样）。
-            method(string): order=买现成的（默认）/ cook=用家里食材自己做 / drink=喝水喝饮料 / grocery=只买食材。
+            method(string): auto=按今日菜价自动选做饭/外卖（默认）/ order=买现成的 / cook=自己做 / drink=喝水喝饮料 / grocery=只买食材。
         """
         plugin = self._finance()
         propose = getattr(plugin, "food_propose", None) if plugin is not None else None
@@ -11256,7 +11280,9 @@ class HumanCorePlugin(Star):
                 miss = "、".join(
                     "%s 缺 %.1f" % (m.get("item"), float(m.get("need") or 0) - float(m.get("have") or 0))
                     for m in (result.get("missing") or []))
-                return "家里没食材，做不了：%s。要先去买（method=grocery）。" % miss
+                switched = str(result.get("switched") or "")
+                return (((switched + "；") if switched else "")
+                        + "家里没食材，做不了：%s。要先去买（method=grocery）。" % miss)
             return "没成：%s" % (result.get("reason") or "不知道怎么了")
         dish_name = str(result.get("dish") or dish)
         mode = str(result.get("method") or method)
@@ -11278,7 +11304,9 @@ class HumanCorePlugin(Star):
             tail.append("饱食度 %.0f" % float(venv.get("satiety") or 0))
         if result.get("balance") is not None:
             tail.append("余额 %.0f 元" % float(result.get("balance") or 0))
-        return head + ("（" + "，".join(tail) + "）" if tail else "") + "。"
+        switched = str(result.get("switched") or "")
+        note = ("（%s）" % switched) if switched else ""
+        return head + ("（" + "，".join(tail) + "）" if tail else "") + note + "。"
 
     @filter.llm_tool(name="amo_repay")
     async def amo_repay(self, event, amount: float = 0) -> str:
@@ -11293,13 +11321,22 @@ class HumanCorePlugin(Star):
             return "我现在没法转账（金融插件没连上）。"
         try:
             value = float(amount or 0)
-            result = payer(value if value > 0 else 10 ** 9) or {}
+            try:
+                result = payer(value if value > 0 else 10 ** 9, notify=False) or {}
+            except TypeError:
+                result = payer(value if value > 0 else 10 ** 9) or {}
         except Exception as exc:
             logger.debug("[amo] amo_repay 失败: %s" % exc)
             return "转账没成功，等会儿再说。"
         if not result.get("ok"):
             return "还不了：%s" % (result.get("reason") or "没有可还的金额")
         self._sync_finance()
+        try:
+            note = getattr(plugin, "money_repay", lambda: {})() or {}
+            if note.get("ts"):
+                self.db.kv_set("last_repay_notified_ts", note["ts"])
+        except Exception:
+            pass
         return "给他转了 %.0f，还欠他 %.0f。" % (
             float(result.get("paid") or 0), float(result.get("remaining") or 0))
 
@@ -11686,6 +11723,10 @@ class HumanCorePlugin(Star):
             self._sync_finance()
         except Exception as exc:
             logger.debug("[amo] 财务同步失败: %s" % exc)
+        try:
+            await self._maybe_notify_repay()
+        except Exception as exc:
+            logger.debug("[amo] 还款通知失败: %s" % exc)
         try:
             await self._maybe_push_salary()
         except Exception as exc:
@@ -16115,6 +16156,40 @@ class HumanCorePlugin(Star):
         except Exception:
             pass
         return None
+
+    async def _maybe_notify_repay(self) -> None:
+        """她自动还了钱：在私聊里说一声，不要只在账本里静默扣。"""
+        plugin = self._finance()
+        reader = getattr(plugin, "money_repay", None) if plugin is not None else None
+        if not callable(reader):
+            return
+        try:
+            note = reader() or {}
+            amount = float(note.get("amount") or 0)
+        except Exception:
+            return
+        if amount <= 0:
+            return
+        ts = float(note.get("ts") or 0)
+        last = to_float(self.db.kv_get("last_repay_notified_ts", 0), 0)
+        if ts and ts <= last:
+            return
+        umo = self._first_private_umo() or self._last_umo
+        if not umo:
+            return
+        remaining = float(note.get("remaining") or 0)
+        if remaining > 0:
+            text = ("老公，我刚还你 %.0f 啦，还欠你 %.0f，剩下的我慢慢还嘛。"
+                    % (amount, remaining))
+        else:
+            text = "老公，我还你钱啦，转了你 %.0f，欠你的还清咯～" % amount
+        try:
+            await self.context.send_message(umo, text)
+        except Exception as exc:
+            logger.debug("[amo] 还款通知发送失败: %s" % exc)
+            return
+        self.db.kv_set("last_repay_notified_ts", ts or now_ts())
+        logger.info("[amo] 还款通知已发：%.0f（还欠 %.0f）" % (amount, remaining))
 
     async def _maybe_push_salary(self) -> None:
         """把人格里的月薪同步给金融。
