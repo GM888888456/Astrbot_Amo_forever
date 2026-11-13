@@ -215,6 +215,15 @@
     .theme-btn.active { color: var(--pink); border-color: var(--pink); }
     .status-shell { display: flex; flex-direction: column; }
     .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+    /* 24 小时计价格：高峰=橙，空闲=青，红线是此刻 */
+    .peak-clock { margin-top: 14px; }
+    .clock-track { position: relative; display: flex; height: 10px; border-radius: 999px;
+      overflow: hidden; background: rgba(128,128,128,.16); margin-top: 8px; }
+    .clock-seg { height: 100%; }
+    .clock-seg.peak { background: #f2994a; }
+    .clock-seg.idle { background: #56b6c2; }
+    .clock-now { position: absolute; top: -4px; bottom: -4px; width: 2px; background: #d83b3b; }
+    .clock-scale { display: flex; justify-content: space-between; font-size: 10px; opacity: .55; margin-top: 4px; }
     .status-item { padding: 12px 0; border-top: 1px solid var(--line); min-width: 0; }
     .status-section { padding: 14px 0; border-top: 1px solid var(--line); min-width: 0; }
     .status-actions { padding-top: 12px; border-top: 1px solid var(--line); }
@@ -580,6 +589,14 @@
             <div class="value" id="usageCost">—</div>
             <div class="sub" id="usageCostSub">按空闲/高峰单价估算</div>
           </div>
+        </div>
+        <div class="peak-clock">
+          <div class="row between">
+            <div class="label">计价时段 <span class="sub" id="clockNote">高峰：工作日 9-12、14-18</span></div>
+            <div class="pill" id="clockNow">—</div>
+          </div>
+          <div class="clock-track" id="clockBar"></div>
+          <div class="clock-scale"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
         </div>
         <div class="row between" style="margin-top:14px">
           <div>
@@ -1867,6 +1884,29 @@
       }
     });
 
+    function renderPeakClock(clock) {
+      const bar = document.getElementById("clockBar");
+      const nowEl = document.getElementById("clockNow");
+      const noteEl = document.getElementById("clockNote");
+      if (!bar || !clock || !Array.isArray(clock.segments)) return;
+      bar.textContent = "";
+      clock.segments.forEach((seg) => {
+        const el = document.createElement("span");
+        el.className = "clock-seg " + (seg.peak ? "peak" : "idle");
+        el.style.width = (((seg.to || 0) - (seg.from || 0)) / 1440 * 100) + "%";
+        bar.appendChild(el);
+      });
+      const marker = document.createElement("i");
+      marker.className = "clock-now";
+      marker.style.left = (Math.max(0, Math.min(1440, Number(clock.now_minute || 0))) / 1440 * 100) + "%";
+      bar.appendChild(marker);
+      if (nowEl) {
+        nowEl.textContent = clock.now_peak ? "现在：高峰价" : "现在：空闲价（5 折）";
+        nowEl.className = "pill " + (clock.now_peak ? "warn" : "ok");
+      }
+      if (noteEl && clock.note) noteEl.textContent = clock.note;
+    }
+
     async function loadUsage(force) {
       const setText = (id, text) => {
         const el = document.getElementById(id);
@@ -1882,6 +1922,7 @@
           return;
         }
         usageLoaded = true;
+        try { renderPeakClock(data.clock); } catch (error) {}
         const today = data.today || {};
         if (today.error) {
           setText("usageInSub", String(today.error));

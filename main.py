@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.9.3"
+PLUGIN_VERSION = "8.9.4"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -1438,6 +1438,28 @@ USAGE_DEFAULT_PRICES = {
     "miss_peak": 2.0, "miss_idle": 1.0,
     "out_peak": 8.0, "out_idle": 4.0,
 }
+
+
+def usage_clock(now=None, step: int = 15):
+    """今天 24 小时的峰谷分段 + 此刻状态（面板画进度条用）。
+
+    每 ``step`` 分钟取一次，跟着 ``usage_is_peak`` 走，以后改计价规则不用改前端。
+    """
+    now = now or _now()
+    segments = []
+    for minute in range(0, 24 * 60, step):
+        sample = now.replace(hour=minute // 60, minute=minute % 60, second=0, microsecond=0)
+        peak = bool(usage_is_peak(sample.timestamp()))
+        if segments and segments[-1]["peak"] == peak:
+            segments[-1]["to"] = minute + step
+        else:
+            segments.append({"from": minute, "to": minute + step, "peak": peak})
+    return {
+        "now_minute": now.hour * 60 + now.minute,
+        "now_peak": bool(usage_is_peak(now.timestamp())),
+        "segments": segments,
+        "note": "高峰：工作日 9-12、14-18；其余按空闲价",
+    }
 
 
 def usage_is_peak(ts):
@@ -15774,6 +15796,10 @@ class HumanCorePlugin(Star):
 
         def build():
             result = {"enabled": True, "currency": "元", "prices": prices}
+            try:
+                result["clock"] = usage_clock(_now())
+            except Exception as exc:
+                logger.debug("[amo] 峰谷分段失败: %s" % exc)
             for label, start in (("today", day_start), ("week", day_start - 6 * 86400), ("total", None)):
                 usage = summarize_token_usage(db_path, start)
                 usage["cost"] = usage_cost(usage, prices)
