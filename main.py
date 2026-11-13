@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.9.4"
+PLUGIN_VERSION = "9.0.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -663,6 +663,15 @@ try:
     from .amo_enums import MOOD_KEYS, ActivityCategory, MoodKey, SceneZone, coerce, value_of
 except ImportError:  # 直接按文件加载时
     from amo_enums import MOOD_KEYS, ActivityCategory, MoodKey, SceneZone, coerce, value_of
+
+try:
+    from .heartflow import Heartflow as HeartflowCore, HeartflowEvent as FeelEvent
+except ImportError:  # pragma: no cover
+    try:
+        from heartflow import Heartflow as HeartflowCore, HeartflowEvent as FeelEvent
+    except ImportError:
+        HeartflowCore = None
+        FeelEvent = None
 
 try:
     from .memory_guard import commit as _mem_commit, prepare as _mem_prepare
@@ -4685,7 +4694,8 @@ class HumanState:
         activity = snap["activity"]
         lines = [
             "现在是 %s。" % snap["datetime_text"],
-            "心情：%s" % self.mood_text(),
+            ("心情：%s" % self.feelings.get_prompt_summary()
+             if getattr(self, "feelings", None) is not None else "心情：%s" % self.mood_text()),
             "生理期：%s第%d天，%s。" % (
                 snap["period"]["phase"], snap["period"]["day"], snap["period"]["tone"]
             ),
@@ -5567,6 +5577,12 @@ class HumanCorePlugin(Star):
                 self.draw = DrawEngine(self)
             except Exception as exc:
                 logger.warning("[amo] 画图引擎初始化失败: %s" % exc)
+        self.feelings = None
+        if HeartflowCore is not None:
+            try:
+                self.feelings = HeartflowCore(self.db)
+            except Exception as exc:
+                logger.warning("[amo] 心流数值核心初始化失败: %s" % exc)
         self.sleep = None
         if SleepCycle is not None:
             try:
@@ -8962,6 +8978,10 @@ class HumanCorePlugin(Star):
         if shoot:
             text += "（画面：%s）" % shoot[:60]
         try:
+            self.feel(FeelEvent.PHOTO_SENT)
+        except Exception:
+            pass
+        try:
             return await self._write_memory_checked(uid, text, kind="photo_record", tier=0)
         except Exception as exc:
             logger.debug("[amo] 照片记忆写入失败: %s" % exc)
@@ -10169,6 +10189,29 @@ class HumanCorePlugin(Star):
             return "收了你的%s %s，我记着欠你 %.0f。" % (
                 kind, amount_text, float(owed or 0))
 
+    def _heartflow_tick(self) -> None:
+        """内驱动：按上次 tick 到现在的时间衰减，重启也不会一次性掉一大截。"""
+        if getattr(self, "feelings", None) is None:
+            return
+        now = now_ts()
+        last = to_float(self.db.kv_get("heartflow_tick_ts", 0), 0)
+        self.db.kv_set("heartflow_tick_ts", now)
+        if not last:
+            return
+        minutes = (now - last) / 60.0
+        if minutes < 0.5 or minutes > 24 * 60:
+            return
+        self.feelings.decay(minutes)
+
+    def feel(self, event, extra=None) -> None:
+        """挂载/终端把「发生了什么」丢进来；加减表在 heartflow.py 里，这里不写业务判断。"""
+        if getattr(self, "feelings", None) is None:
+            return
+        try:
+            self.feelings.apply(event, extra)
+        except Exception as exc:
+            logger.debug("[amo] 心流事件失败(%s): %s" % (event, exc))
+
     def _sleeping_now(self) -> bool:
         try:
             return bool(self.sleep is not None and self.sleep.is_asleep(_clock_now()))
@@ -10452,6 +10495,10 @@ class HumanCorePlugin(Star):
             origin = (("%s %.2f（折合 ¥%.2f）" % (currency, amount, cny))
                       if currency != "CNY" else ("%.2f" % cny))
             yield_text = self._warm_gift_reply(kind, cny, owed, origin=origin)
+            try:
+                self.feel(FeelEvent.MONEY_GIFT)
+            except Exception:
+                pass
         try:
             await self.context.send_message(event.unified_msg_origin, yield_text)
         except Exception as exc:
@@ -12639,6 +12686,10 @@ class HumanCorePlugin(Star):
             await self._sleep_tick()
         except Exception as exc:
             logger.debug("[amo] 睡眠推进失败: %s" % exc)
+        try:
+            self._heartflow_tick()
+        except Exception as exc:
+            logger.debug("[amo] 心流衰减失败: %s" % exc)
         self.state.decay_mood()
         if self.state.last_daily != today_str():
             self.state.daily_tick()
