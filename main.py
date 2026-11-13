@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.5.1"
+PLUGIN_VERSION = "8.5.2"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -10557,6 +10557,8 @@ class HumanCorePlugin(Star):
             "【他刚给了你钱】%d 秒前他给你发了 %s %.0f（现在欠他 %.0f）。"
             "要有点被宠到的开心，自然地说一句「老公今天怎么对我这么好啊」之类的话，"
             "谢谢他，别装作没发生，也别只报数字。"
+            "这钱是让你吃好点、买点好吃的，不是让你拿去补仓；先把自己喂饱。"
+            "这笔钱是给你**吃好的**：下一顿点顿像样的（按你口味），别拿去买泡面/最便宜的凑合。"
             % (int(note.get("seconds") or 0), channel, amount,
                float(note.get("owed") or 0))
         )
@@ -10623,6 +10625,19 @@ class HumanCorePlugin(Star):
             "可以自然地说一句「我还你钱啦」，别邀功、别报流水。"
             % (int(note.get("seconds") or 0), amount,
                float(note.get("remaining") or 0))
+        )
+
+    def _drive_line(self, snap) -> str:
+        """她自己日程里在开车：别把「我在开」说成「你在开」。"""
+        activity = snap.get("activity") or {}
+        text = "%s %s" % (activity.get("activity") or "", activity.get("place") or "")
+        if not any(word in text for word in ("开车", "驾车", "路上", "通勤", "堵车")):
+            return ""
+        return (
+            "【开车的是你】现在「%s（%s）」是你自己的日程，不是他。"
+            "说你自己的事要用「我」：我在开车、我路上慢点，别反过来说成他在开。"
+            % (activity.get("activity") or "在路上",
+               self._short_place(activity.get("place") or ""))
         )
 
     def _sick_line(self, snap) -> str:
@@ -10765,6 +10780,9 @@ class HumanCorePlugin(Star):
             "【天气】" + snap["weather_text"],
             "【天气一致】你的天气以【天气】为准；不要说出和它相反的冷热（除非刚进出空调房/室内）。",
             "【正在】" + snap["activity"].get("activity", "休息") + "（" + self._short_place(snap["activity"].get("place", "家")) + "）",
+            "【日程归属】【正在】里的活动和地点都是**你自己**的：开车的是你、逛商场的也是你，不是他。"
+            "他说他没出门时，不要把你的行程说成他在做；也不要把你的开车说成“你路上慢点开”。",
+            *([self._drive_line(snap)] if self._drive_line(snap) else []),
             self._money_line(),
             *([self._gift_line()] if self._gift_line() else []),
             *([self._borrow_line()] if self._borrow_line() else []),

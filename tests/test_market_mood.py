@@ -191,6 +191,23 @@ class AutoTreatTests(unittest.TestCase):
         self.assertTrue(calls.get("synced"))
 
 
+class DriveTests(unittest.TestCase):
+    def test_drive_line_is_self(self):
+        obj = object.__new__(M.HumanCorePlugin)
+        obj._short_place = lambda p: p
+        text = obj._drive_line({"activity": {
+            "activity": "开车去商场，雾天路上有点堵", "place": "路上"}})
+        self.assertIn("开车的是你", text)
+        self.assertIn("我在开车", text)
+        self.assertIn("不是他", text)
+
+    def test_no_drive_line_when_home(self):
+        obj = object.__new__(M.HumanCorePlugin)
+        obj._short_place = lambda p: p
+        self.assertEqual(obj._drive_line({"activity": {
+            "activity": "窝在沙发上追剧", "place": "家"}}), "")
+
+
 class SickTests(unittest.TestCase):
     def test_sick_line(self):
         obj = object.__new__(M.HumanCorePlugin)
