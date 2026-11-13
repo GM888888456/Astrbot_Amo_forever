@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.2"
+PLUGIN_VERSION = "9.0.3"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -2953,6 +2953,38 @@ class HumanState:
             "ovulation_day": ovulation_day, "ovulation_window": ovulation_window,
             "next_start": (_now().date() + timedelta(days=cycle_days - day + 1)).isoformat(),
         }
+
+    def set_period_settings(self, cycle_days=None, start=None):
+        """医疗面板改生理期：周期天数 + 上次开始日期（只写配置和 kv）。"""
+        changed = False
+        if cycle_days is not None:
+            try:
+                days = max(10, min(60, int(cycle_days)))
+                if int(self.p.cfg_int("period_cycle_days", 28)) != days:
+                    self.p.config["period_cycle_days"] = days
+                    changed = True
+            except Exception:
+                pass
+        if start:
+            try:
+                self.set_period_start(str(start))
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            try:
+                saver = getattr(self.p.config, "save_config", None)
+                if callable(saver):
+                    saver()
+            except Exception:
+                pass
+            try:
+                remember = getattr(self.p, "_remember_config", None)
+                if callable(remember):
+                    remember()
+            except Exception:
+                pass
+        return self.period_info()
 
     def set_period_start(self, value):
         try:
@@ -10189,6 +10221,34 @@ class HumanCorePlugin(Star):
             return "收了你的%s %s，我记着欠你 %.0f。" % (
                 kind, amount_text, float(owed or 0))
 
+    def _period_feel_tick(self) -> None:
+        """生理期开始/结束时给心流发一次事件（每天最多一次）。"""
+        if getattr(self, "feelings", None) is None or FeelEvent is None:
+            return
+        try:
+            info = self.state.period_info() or {}
+        except Exception:
+            return
+        day = int(info.get("day") or 0)
+        bleed = int(info.get("bleed_days") or 0)
+        if not day or not bleed:
+            return
+        today = today_str()
+        try:
+            marker = self.db.kv_get("period_feel", {}) or {}
+        except Exception:
+            marker = {}
+        if not isinstance(marker, dict):
+            marker = {}
+        if day == 1 and marker.get("start") != today:
+            self.feel(FeelEvent.PERIOD_START)
+            marker["start"] = today
+            self.db.kv_set("period_feel", marker)
+        elif day == bleed + 1 and marker.get("end") != today:
+            self.feel(FeelEvent.PERIOD_END)
+            marker["end"] = today
+            self.db.kv_set("period_feel", marker)
+
     def _heartflow_tick(self) -> None:
         """内驱动：按上次 tick 到现在的时间衰减，重启也不会一次性掉一大截。"""
         if getattr(self, "feelings", None) is None:
@@ -12690,6 +12750,10 @@ class HumanCorePlugin(Star):
             self._heartflow_tick()
         except Exception as exc:
             logger.debug("[amo] 心流衰减失败: %s" % exc)
+        try:
+            self._period_feel_tick()
+        except Exception as exc:
+            logger.debug("[amo] 生理期事件失败: %s" % exc)
         self.state.decay_mood()
         if self.state.last_daily != today_str():
             self.state.daily_tick()

@@ -1,5 +1,11 @@
 # Changelog
 
+## 9.0.3（生理期接入心流：医疗面板双击设置）
+
+- `state.set_period_settings(cycle_days, start)`：医疗面板改周期/上次开始，写配置 + kv 并重算。
+- `_period_feel_tick()`：生理期第 1 天发 `PERIOD_START`（Energy−20 / Anger+15 / Desire_BODY+20），干净后第 1 天发 `PERIOD_END`；每天各一次，写在 kv `period_feel`。
+- 心流数值仍然只由事件驱动，面板不开放改数。
+
 ## 9.0.2（面板改动修正：别误删函数）
 
 - 9.0.1 的面板改动里，删除旧雷达图时误删了紧随其后的几个顶层函数（`action` 等）。这次按「函数头到下一个顶层函数」精确切割，并加了三道自检：关键函数清单、`node --check` 语法检查、`moodModal` 必须为 0。
