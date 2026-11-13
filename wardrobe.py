@@ -142,6 +142,7 @@ class Wardrobe:
             items.append({
                 "id": str(item.get("id") or ("w" + uuid.uuid4().hex[:10])),
                 "name": name,
+                "slot": str(item.get("slot") or ""),
                 "scenes": scenes or guess_scenes(name),
                 "gender": str(item.get("gender") or "通用"),
                 "enabled": bool(item.get("enabled", True)),
@@ -207,10 +208,12 @@ class Wardrobe:
                 "created": float(row.get("created") or time.time()),
             }
             rows.append(item)
-        with self.lock:
-            self._items = rows[:MAX_ITEMS]
+        with self._lock:
+            data = self._load()
+            data["items"] = rows[:MAX_ITEMS]
+            self._data = data
             self._save()
-        return len(self._items)
+        return len(rows[:MAX_ITEMS])
 
     def add(self, name, scenes=None, gender="通用", note=""):
         name = clean_name(name)
