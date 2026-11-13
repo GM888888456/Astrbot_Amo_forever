@@ -56,6 +56,25 @@ class ConfigGuardCase(unittest.TestCase):
         self.assertEqual(sorted(report["restored"]), ["hefeng_key", "weather_host"])
         self.assertEqual(cleared.saved, 1, "补回后必须落盘")
 
+    def test_removed_schema_key_is_not_resurrected(self):
+        """schema 删掉的键＝功能已下线，不许从快照里复活。"""
+        config = FakeConfig(self.cfg_path, {"hefeng_key": "abc123",
+                                            "photo_daily_cap": 4})
+        config_guard.heal(config, plugin_name="Demo", plugin_dir=self.plugin_dir,
+                          data_dir=self.data_dir)
+
+        # 从 schema 里删掉它，再清空配置重启
+        schema_path = os.path.join(self.plugin_dir, "_conf_schema.json")
+        with open(schema_path, "w", encoding="utf-8") as fh:
+            json.dump({"hefeng_key": {"type": "string", "default": ""},
+                       "weather_host": {"type": "string", "default": ""}}, fh)
+        cleared = FakeConfig(self.cfg_path, {"hefeng_key": ""})
+        report = config_guard.heal(cleared, plugin_name="Demo", plugin_dir=self.plugin_dir,
+                                   data_dir=self.data_dir)
+        self.assertNotIn("photo_daily_cap", cleared, "已下线的键不许复活")
+        self.assertNotIn("photo_daily_cap", report["restored"])
+        self.assertEqual(cleared["hefeng_key"], "abc123", "还在 schema 里的键照旧补回")
+
     def test_does_not_overwrite_user_value(self):
         config = FakeConfig(self.cfg_path, {"hefeng_key": "old"})
         config_guard.heal(config, plugin_name="Demo", plugin_dir=self.plugin_dir,
