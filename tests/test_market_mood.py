@@ -122,6 +122,47 @@ class InvestAwarenessTests(unittest.TestCase):
         self.assertIn("还没有持仓", text)
 
 
+class DoctorTests(unittest.TestCase):
+    def _plugin(self, sick=True, ok=True):
+        calls = {}
+
+        class FakeMedical:
+            def status(self):
+                return {"sick": sick}
+
+            async def treat(self, auto=False):
+                calls["treat"] = auto
+                return {"ok": ok, "name": "感冒", "self_pay": 12.0,
+                        "reason": "" if ok else "余额不足"}
+
+        obj = object.__new__(M.HumanCorePlugin)
+        obj._medical = lambda: FakeMedical()
+        obj.db = type("DB", (), {
+            "kv_set": lambda self, k, v: calls.__setitem__("note", v),
+            "kv_get": lambda self, k, d=None: calls.get("note", d),
+        })()
+        obj._sync_health_from_medical = lambda: calls.__setitem__("synced", True)
+        event = type("E", (), {"is_private_chat": lambda self: True})()
+        return obj, event, calls
+
+    def test_urged_when_sick(self):
+        obj, event, calls = self._plugin()
+        said = "都病成这样了还不去医院看看，走我带你去医院"
+        self.assertTrue(asyncio.run(obj._maybe_user_takes_her_to_doctor(event, said)))
+        self.assertEqual(calls.get("treat"), False)   # auto=False：手动就医
+        self.assertTrue(calls.get("synced"))
+
+    def test_not_urged_stays_home(self):
+        obj, event, calls = self._plugin()
+        self.assertFalse(asyncio.run(obj._maybe_user_takes_her_to_doctor(event, "今天吃什么")))
+        self.assertNotIn("treat", calls)
+
+    def test_healthy_ignores_urge(self):
+        obj, event, calls = self._plugin(sick=False)
+        self.assertFalse(asyncio.run(obj._maybe_user_takes_her_to_doctor(event, "走我带你去医院")))
+        self.assertNotIn("treat", calls)
+
+
 class SickTests(unittest.TestCase):
     def test_sick_line(self):
         obj = object.__new__(M.HumanCorePlugin)
