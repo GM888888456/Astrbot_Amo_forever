@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.7.2"
+PLUGIN_VERSION = "8.7.3"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -7363,6 +7363,39 @@ class HumanCorePlugin(Star):
 
     IMAGE_PLUGIN_NAMES = ("Astrbot_Amo_Image", "astrbot_plugin_amo_image", "amo_image")
 
+    #: 每轮活动的短时快照：umo -> (activity, ts)
+    TURN_SNAPSHOT_TTL = 180
+
+    def _remember_turn_activity(self, umo, activity):
+        """记下这一轮注入给模型的活动，出图时复用同一份（说 A 就画 A）。"""
+        key = str(umo or "")
+        if not key or not isinstance(activity, dict) or not activity:
+            return
+        try:
+            if not isinstance(getattr(self, "_turn_activity", None), dict):
+                self._turn_activity = {}
+            self._turn_activity[key] = (dict(activity), now_ts())
+            if len(self._turn_activity) > 32:
+                keep = sorted(self._turn_activity, key=lambda k: self._turn_activity[k][1])[-16:]
+                self._turn_activity = {k: self._turn_activity[k] for k in keep}
+        except Exception as exc:
+            logger.debug("[amo] 记录活动快照失败: %s" % exc)
+
+    def _activity_snapshot(self, umo="", max_age=None):
+        """这一轮该用的「她在哪」：优先用注入过的那份，过期才重新读。"""
+        limit = self.TURN_SNAPSHOT_TTL if max_age is None else max_age
+        key = str(umo or "")
+        try:
+            entry = (getattr(self, "_turn_activity", None) or {}).get(key)
+            if entry and (now_ts() - float(entry[1] or 0)) <= limit:
+                return dict(entry[0])
+        except Exception:
+            pass
+        try:
+            return dict(self.state.current_activity() or {})
+        except Exception:
+            return {}
+
     def _image_plugin(self):
         """找生图插件实例；没装/没启用就返回 None。"""
         for name in self.IMAGE_PLUGIN_NAMES:
@@ -7397,14 +7430,14 @@ class HumanCorePlugin(Star):
                 return value
         return None
 
-    def _image_share_prompt(self):
+    def _image_share_prompt(self, scene=None):
         """按她此刻在干嘛拼提示词；拿不到状态就用一句通用的自拍。"""
         activity = ""
         place = ""
         try:
-            current = self.state.current_activity() or {}
-            activity = str(current.get("activity") or "").strip()
-            place = str(current.get("place") or "").strip()
+            current = scene if isinstance(scene, dict) else self._activity_snapshot()
+            activity = str((current or {}).get("activity") or "").strip()
+            place = str((current or {}).get("place") or "").strip()
         except Exception:
             pass
         template = self.cfg_str(
@@ -7539,11 +7572,13 @@ class HumanCorePlugin(Star):
         quote = ""
         if self.cfg_bool("image_share_quote", True):
             quote = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "")
+        scene = self._activity_snapshot(str(event.unified_msg_origin))
         return {
             "plugin": plugin,
             "umo": str(event.unified_msg_origin),
             "uid": str(event.get_sender_id() or ""),
-            "prompt": self._image_share_prompt(),
+            "prompt": self._image_share_prompt(scene),
+            "scene": scene,
             "quote": quote,
             "now": now,
             "used": used,
@@ -7557,9 +7592,19 @@ class HumanCorePlugin(Star):
         timeout = max(1, self.cfg_int("image_share_timeout", 90))
         self._share_inflight = True
         try:
-            data = await asyncio.wait_for(
-                plugin.draw_for(umo, decision.get("uid") or "", prompt), timeout=timeout
-            )
+            scene = decision.get("scene") if isinstance(decision.get("scene"), dict) else {}
+            try:
+                data = await asyncio.wait_for(
+                    plugin.draw_for(umo, decision.get("uid") or "", prompt,
+                                    place=str(scene.get("place") or ""),
+                                    activity=str(scene.get("activity") or ""),
+                                    zone=str(scene.get("zone") or "")),
+                    timeout=timeout,
+                )
+            except TypeError:
+                data = await asyncio.wait_for(
+                    plugin.draw_for(umo, decision.get("uid") or "", prompt), timeout=timeout
+                )
             if not data:
                 return
             prefix = self.cfg_str("image_share_prefix", "")
@@ -11051,6 +11096,12 @@ class HumanCorePlugin(Star):
         except Exception as exc:
             logger.debug("[amo] 旅游意愿失败: %s" % exc)
         snap = self.state.snapshot()
+        # 这一轮「她在哪、在干嘛」只取一次：聊天注入和随后那张照片必须用同一份，
+        # 否则她刚说在酒店，下一分钟出图按新日程换成景区，看起来就是骗人。
+        try:
+            self._remember_turn_activity(umo, snap.get("activity") or {})
+        except Exception:
+            pass
         _, memory_text = await self._recall(uid, event.message_str or "", event)
         self_name, self_uid, self_qq_nick, self_display = await self._self_identity(event)
         alias = str(profile.get("alias") or "").strip()
@@ -16825,7 +16876,7 @@ class HumanCorePlugin(Star):
         parts.extend(["自然光", "手机前置摄像头", "生活感"])
         return "，".join(parts)
 
-    async def _image_bytes(self, prompt, umo="", uid="", selfie=None):
+    async def _image_bytes(self, prompt, umo="", uid="", selfie=None, scene=None):
         """出图兜底入口：让生图插件（Astrbot_Amo_Image）直接吐图片字节。
 
         画图/照片引擎原先只认万象画卷（OmniDraw），机器上没装就一张都出不来；
@@ -16837,17 +16888,29 @@ class HumanCorePlugin(Star):
         prompt = str(prompt or "").strip()
         if not prompt:
             return None
+        scene = scene if isinstance(scene, dict) else self._activity_snapshot(umo)
+        place = str((scene or {}).get("place") or "").strip()
+        activity = str((scene or {}).get("activity") or "").strip()
+        zone = str((scene or {}).get("zone") or "").strip()
+        logger.info("[amo] 出图场景：%s / %s" % (place or "未定", activity or "未定"))
         try:
             try:
                 return await asyncio.wait_for(
-                    plugin.draw_for(str(umo or ""), str(uid or ""), prompt, selfie=selfie),
+                    plugin.draw_for(str(umo or ""), str(uid or ""), prompt, selfie=selfie,
+                                    place=place, activity=activity, zone=zone),
                     timeout=180,
                 )
             except TypeError:
-                # 老版本生图插件不认 selfie：退回三参数
-                return await asyncio.wait_for(
-                    plugin.draw_for(str(umo or ""), str(uid or ""), prompt), timeout=180
-                )
+                # 老版本生图插件：先退到 selfie，再不认就退回三参数
+                try:
+                    return await asyncio.wait_for(
+                        plugin.draw_for(str(umo or ""), str(uid or ""), prompt, selfie=selfie),
+                        timeout=180,
+                    )
+                except TypeError:
+                    return await asyncio.wait_for(
+                        plugin.draw_for(str(umo or ""), str(uid or ""), prompt), timeout=180
+                    )
         except Exception as exc:
             logger.warning("[amo] 生图插件出图失败: %s" % exc)
             return None

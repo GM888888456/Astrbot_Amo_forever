@@ -46,6 +46,62 @@ class PseudoTagTests(unittest.TestCase):
         self.assertEqual(amo_main._strip_voice_tags("<text>爱你呀</text>"), "爱你呀")
 
 
+class FakeState:
+    def __init__(self, place="南明区·小窝", activity="窝着刷手机", zone="home"):
+        self.place, self.activity, self.zone = place, activity, zone
+
+    def current_activity(self):
+        return {"place": self.place, "activity": self.activity, "zone": self.zone}
+
+
+class FakeImagePlugin:
+    def __init__(self):
+        self.calls = []
+
+    async def draw_for(self, umo, uid="", prompt="", **kwargs):
+        self.calls.append(dict(kwargs, umo=umo, uid=uid, prompt=prompt))
+        return b"\x89PNG"
+
+
+class TurnSnapshotTests(unittest.TestCase):
+    """聊天注入和出图必须用同一份「她在哪」。"""
+
+    def plugin(self, state=None):
+        p = object.__new__(amo_main.HumanCorePlugin)
+        p._turn_activity = {}
+        p.state = state or FakeState()
+        p.image = FakeImagePlugin()
+        p._image_plugin = lambda: p.image
+        return p
+
+    def test_turn_snapshot_wins_over_live_state(self):
+        p = self.plugin()
+        p._remember_turn_activity("umo1", {"place": "南阳·酒店房间",
+                                           "activity": "在酒店躺着", "zone": "hotel"})
+        p.state = FakeState()          # 日程已经翻到下一格了
+        snap = p._activity_snapshot("umo1")
+        self.assertEqual(snap["place"], "南阳·酒店房间")
+
+    def test_expired_snapshot_falls_back_to_state(self):
+        p = self.plugin()
+        p._remember_turn_activity("umo1", {"place": "南阳·酒店房间", "zone": "hotel"})
+        snap = p._activity_snapshot("umo1", max_age=0)
+        self.assertEqual(snap["place"], "南明区·小窝")
+
+    def test_image_bytes_passes_place_activity_zone(self):
+        import asyncio
+        p = self.plugin()
+        p._remember_turn_activity("umo1", {"place": "南阳·酒店房间",
+                                           "activity": "在酒店躺着", "zone": "hotel"})
+        data = asyncio.run(p._image_bytes("自拍", "umo1", "u1", selfie=True))
+        self.assertEqual(data, b"\x89PNG")
+        kwargs = p.image.calls[0]
+        self.assertEqual(kwargs["place"], "南阳·酒店房间")
+        self.assertEqual(kwargs["activity"], "在酒店躺着")
+        self.assertEqual(kwargs["zone"], "hotel")
+        self.assertTrue(kwargs["selfie"])
+
+
 class FakeDB:
     def __init__(self):
         self.kv = {}
