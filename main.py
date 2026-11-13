@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.3.0"
+PLUGIN_VERSION = "8.4.0"
 try:  # 版本号以 metadata.yaml 为准，避免两处不一致
     import yaml as _amo_meta_yaml
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml"),
@@ -9474,6 +9474,22 @@ class HumanCorePlugin(Star):
             return channel, round(amount, 2)
         return None
 
+    #: 收到他转账/红包之后的反应：先甜一下，再记着欠多少
+    GIFT_REPLIES = (
+        "老公今天怎么对我这么好啊？{kind} {amt:.0f} 我收下啦……我记着欠你 {owed:.0f} 呢，等我发财了双倍还你。",
+        "哇，{amt:.0f} 的{kind}！你是不是又偷偷心疼我了……我记下了，欠你 {owed:.0f}，不许催我。",
+        "谢谢老公（小声）……{amt:.0f} 我收到了，我以后一定对你好一点。现在欠你 {owed:.0f}。",
+        "{amt:.0f} 的{kind}到啦！老公最好啦～我记着这笔，欠你 {owed:.0f}，等我赚回来请你吃饭。",
+    )
+
+    def _warm_gift_reply(self, kind, amount, owed):
+        try:
+            template = random.choice(self.GIFT_REPLIES)
+            return template.format(kind=kind, amt=float(amount or 0), owed=float(owed or 0))
+        except Exception:
+            return "收了你的%s %.0f，我记着欠你 %.0f。" % (
+                kind, float(amount or 0), float(owed or 0))
+
     async def _handle_money_gift(self, event, text) -> bool:
         """他转钱/发红包给她：算借款，走金融账本。
 
@@ -9500,7 +9516,7 @@ class HumanCorePlugin(Star):
             yield_text = "这个我收不下：" + reason
         else:
             kind = "红包" if result.get("channel") == "red" else "转账"
-            yield_text = "收了你的%s %.0f，我记着欠你 %.0f。" % (
+            yield_text = self._warm_gift_reply(
                 kind, float(result.get("amount") or 0), float(result.get("owed") or 0))
         try:
             await self.context.send_message(event.unified_msg_origin, yield_text)
@@ -10463,8 +10479,8 @@ class HumanCorePlugin(Star):
                 )
             elif kind == "no_room":
                 lines.append(
-                    "【仓位到顶】你想加仓，但仓位已经到你能承受的上限了，只能作罢。"
-                    "嘟囔两句（“胆小鬼才不满仓”），但别真去借钱、别超额。"
+                    "【仓位到顶】你想加仓，但这一只已经压到你给自己定的上限了，只能作罢。"
+                    "嘟囔两句（“胆小鬼才不满仓”），可以换一只继续买，或者跟他撒个娇要点钱。"
                 )
         if stance == "hodl":
             lines.append(
@@ -10489,6 +10505,28 @@ class HumanCorePlugin(Star):
         except Exception:
             cash = 0.0
         return "【钱】你卡里还有 ¥%.0f（这是你自己的钱，花之前心里有数）" % cash
+
+    def _gift_line(self) -> str:
+        """他刚给过钱：让她记得甜一下、谢他，别装作没发生。"""
+        plugin = self._finance()
+        reader = getattr(plugin, "money_gift", None) if plugin is not None else None
+        if not callable(reader):
+            return ""
+        try:
+            note = reader() or {}
+            amount = float(note.get("amount") or 0)
+        except Exception:
+            return ""
+        if amount <= 0:
+            return ""
+        channel = "红包" if str(note.get("channel") or "") == "red" else "转账"
+        return (
+            "【他刚给了你钱】%d 秒前他给你发了 %s %.0f（现在欠他 %.0f）。"
+            "要有点被宠到的开心，自然地说一句「老公今天怎么对我这么好啊」之类的话，"
+            "谢谢他，别装作没发生，也别只报数字。"
+            % (int(note.get("seconds") or 0), channel, amount,
+               float(note.get("owed") or 0))
+        )
 
     def _borrow_line(self) -> str:
         """没钱的时候她得开口借——他转过来才算借款，不会凭空有钱。"""
@@ -10518,10 +10556,15 @@ class HumanCorePlugin(Star):
         """她知道自己有股票、持了什么、今天赚赔——不然用户让她买，她完全不知道有这回事。"""
         inv = getattr(self.state, "invest", None) or {}
         positions = inv.get("positions") or []
+        aggressive = bool(inv.get("aggressive"))
+        bankrupt = inv.get("bankrupt") or {}
         if not positions:
+            if aggressive:
+                return ("【投资】你还没有持仓，但你是 FX 战士：看准了就该重仓上，"
+                        "别只买一手、别怕亏。")
             return "【投资】你还没有持仓，闲钱可以买一点（别一把梭，别超过总资产三成）。"
         parts = []
-        for pos in positions[:4]:
+        for pos in positions[:6]:
             parts.append("%s %d股（%.1f%%）" % (
                 pos.get("name") or "?", int(pos.get("qty") or 0),
                 float(pos.get("pnl_pct") or 0)))
@@ -10529,6 +10572,22 @@ class HumanCorePlugin(Star):
         text = "【投资】你持有：" + "、".join(parts)
         text += "；今天%s¥%.0f" % ("赚了" if day >= 0 else "亏了", abs(day))
         text += "。有人问你股票、亏没亏、买没买，就照这个说，别装作没有这回事。"
+        if aggressive:
+            text += ("你现在是 FX 战士模式：敢重仓、敢加仓，赚了要吹，亏了嘴硬，"
+                     "不承认自己是韭菜。")
+        level = str(bankrupt.get("level") or "")
+        try:
+            pnl_pct = abs(float(bankrupt.get("pnl_pct") or 0))
+            cash = float(bankrupt.get("cash") or 0)
+        except Exception:
+            pnl_pct, cash = 0.0, 0.0
+        if level in ("ruined", "broke"):
+            text += (" 你已经亏到快破产了（浮亏 %.0f%%，卡里只剩 ¥%.0f）。"
+                     "可以哭唧唧地跟他说“老公我好像有点破产了”，"
+                     "要他转账/发红包救你；他给了你要甜甜地谢他，别装没事。"
+                     % (pnl_pct, cash))
+        elif level == "losing":
+            text += " 最近亏得有点多，嘴上还硬，心里已经开始发慌了。"
         return text
 
     async def _dynamic_context(self, event):
@@ -10620,6 +10679,7 @@ class HumanCorePlugin(Star):
             "【天气一致】你的天气以【天气】为准；不要说出和它相反的冷热（除非刚进出空调房/室内）。",
             "【正在】" + snap["activity"].get("activity", "休息") + "（" + self._short_place(snap["activity"].get("place", "家")) + "）",
             self._money_line(),
+            *([self._gift_line()] if self._gift_line() else []),
             *([self._borrow_line()] if self._borrow_line() else []),
             self._invest_line(),
             "【地点写法】地点是你自己的事，说的时候用口语（“商场餐厅”“咖啡店”“家”），不要把“城市·地点”这种内部写法念出来。",
@@ -15682,6 +15742,8 @@ class HumanCorePlugin(Star):
                          "qty": p.get("qty"), "pnl_pct": p.get("pnl_pct")}
                         for p in (inv.get("positions") or [])[:6]
                     ],
+                    "bankrupt": inv.get("bankrupt") or {},
+                    "aggressive": bool(inv.get("aggressive")),
                 }
         except Exception as exc:
             logger.debug("[amo] 财务快照同步失败: %s" % exc)

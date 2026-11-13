@@ -147,11 +147,11 @@ class LeekTests(unittest.TestCase):
         self.assertIn("没钱", lines)
         self.assertIn("转点", lines)
 
-    def test_no_room_sulks_but_obeys(self):
+    def test_no_room_sulks_and_can_ask_for_money(self):
         leek = {"kind": "no_room"}
         lines = " ".join(self._plugin("overconfident", leek)._leek_lines())
         self.assertIn("仓位到顶", lines)
-        self.assertIn("别真去借钱", lines)
+        self.assertIn("换一只继续买", lines)
 
     def test_hodl_refuses_to_sell(self):
         lines = " ".join(self._plugin("hodl")._leek_lines())
