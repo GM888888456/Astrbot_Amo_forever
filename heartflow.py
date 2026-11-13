@@ -97,6 +97,27 @@ EVENT_DELTAS: dict[HeartflowEvent, dict] = {
     HeartflowEvent.WISH_MOVE: {Emotion.JOY: 4, Desire.MIND: 4},
 }
 
+#: 事件 → 给模型看的「为什么」（写进最近的经历里）
+EVENT_NOTES = {
+    HeartflowEvent.CHAT_REPLY: "他刚好好跟我聊了几句",
+    HeartflowEvent.CHAT_IGNORED: "他把我晾着没回",
+    HeartflowEvent.CHAT_PRAISE: "他夸我了",
+    HeartflowEvent.CHAT_INSULT: "他凶我了",
+    HeartflowEvent.MONEY_GIFT: "他给我转账了",
+    HeartflowEvent.MONEY_TIP: "他打赏我",
+    HeartflowEvent.MONEY_TIGHT: "手头有点紧",
+    HeartflowEvent.PHOTO_SENT: "我刚给他发了照片",
+    HeartflowEvent.VOICE_SENT: "我刚给他发了语音",
+    HeartflowEvent.MEAL: "我吃了点东西",
+    HeartflowEvent.MEDICAL_SICK: "我生病了",
+    HeartflowEvent.MEDICAL_TREATED: "看过病了，好一点",
+    HeartflowEvent.PERIOD_START: "生理期来了，肚子疼",
+    HeartflowEvent.PERIOD_END: "生理期过去了",
+    HeartflowEvent.TRIP_START: "出门玩了",
+    HeartflowEvent.TRIP_END: "旅行结束回来了",
+    HeartflowEvent.WISH_MOVE: "他说了句话，我改了行程",
+}
+
 #: 极端值的内心戏（第一人称）；键是 (维度, 方向)
 INNER_VOICE = {
     (Emotion.JOY, "high"): "我现在开心得想原地转圈。",
@@ -162,14 +183,46 @@ class Heartflow:
 
     # ---------- 外驱动 ----------
 
-    def apply(self, event, extra: dict | None = None) -> dict:
-        """按事件名加减；``extra`` 允许调用方补一点（仍然只有加减）。"""
+    LOG_KEY = "heartflow_log"
+
+    def recent(self, limit: int = 6) -> list:
+        try:
+            rows = self.db.kv_get(self.LOG_KEY, []) or []
+        except Exception:
+            return []
+        return rows[-max(1, int(limit)):] if isinstance(rows, list) else []
+
+    def _remember(self, event, note: str) -> None:
+        import time
+        rows = self.recent(8)
+        rows.append({"ts": time.time(), "event": str(getattr(event, "value", event)),
+                     "note": str(note or "")})
+        try:
+            self.db.kv_set(self.LOG_KEY, rows[-8:])
+        except Exception:
+            pass
+
+    def apply(self, event, extra: dict | None = None, severity: float | None = None) -> dict:
+        """按事件名加减；``severity``（0–10）按比例放大这一次的影响。"""
         values = self.load()
         try:
             key = HeartflowEvent(str(event))
         except ValueError:
             key = None
-        table = EVENT_DELTAS.get(key, {}) if key is not None else {}
+        if severity is not None:
+            try:
+                factor = max(0.3, min(1.5, 0.3 + float(severity) / 10.0 * 1.2))
+            except (TypeError, ValueError):
+                factor = 1.0
+        else:
+            factor = 1.0
+        table = {}
+        if key is not None:
+            table = {dim: delta * factor for dim, delta in EVENT_DELTAS.get(key, {}).items()}
+            note = EVENT_NOTES.get(key, "")
+            if key is HeartflowEvent.PERIOD_START and severity is not None:
+                note = "生理期来了，痛经 %d 级" % int(severity)
+            self._remember(key, note)
         for dim, delta in list(table.items()) + list((extra or {}).items()):
             name = dim.value if isinstance(dim, Enum) else str(dim)
             if name not in values:
@@ -217,6 +270,10 @@ class Heartflow:
                 lines.append(INNER_VOICE.get((dim, "low")) or ("我现在%s几乎没有了。" % name_cn(dim)))
         if lines:
             parts.append("（内心：%s）" % " ".join(lines[:4]))
+        reasons = [row.get("note") for row in self.recent(3) if str(row.get("note") or "").strip()]
+        if reasons:
+            parts.append("（最近发生：%s。情绪就是这么来的，别装作没这回事。）"
+                         % "；".join(reasons[-3:]))
         return "\n".join(parts)
 
 

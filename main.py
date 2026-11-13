@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.3"
+PLUGIN_VERSION = "9.0.4"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -10225,6 +10225,12 @@ class HumanCorePlugin(Star):
         """生理期开始/结束时给心流发一次事件（每天最多一次）。"""
         if getattr(self, "feelings", None) is None or FeelEvent is None:
             return
+        # 医疗插件在的时候由它发 PERIOD_START/END（带痛经等级），终端只做兜底
+        try:
+            if self._medical() is not None:
+                return
+        except Exception:
+            pass
         try:
             info = self.state.period_info() or {}
         except Exception:
@@ -10262,6 +10268,22 @@ class HumanCorePlugin(Star):
         if minutes < 0.5 or minutes > 24 * 60:
             return
         self.feelings.decay(minutes)
+
+    def emit_event(self, name, payload=None) -> dict:
+        """挂载插件唯一的事件入口：只交事件名 + 少量参数。
+
+        加减表、边界锁定全在 ``heartflow.py``；这里也不做业务判断，只把
+        ``payload["severity"]``（0–10）透传成这一次的放大倍数。
+        """
+        if getattr(self, "feelings", None) is None:
+            return {}
+        payload = payload if isinstance(payload, dict) else {}
+        severity = payload.get("severity")
+        try:
+            return self.feelings.apply(name, severity=severity)
+        except Exception as exc:
+            logger.debug("[amo] 事件 %s 处理失败: %s" % (name, exc))
+            return {}
 
     def feel(self, event, extra=None) -> None:
         """挂载/终端把「发生了什么」丢进来；加减表在 heartflow.py 里，这里不写业务判断。"""
