@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.9.2"
+PLUGIN_VERSION = "8.9.3"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -663,6 +663,15 @@ try:
     from .amo_enums import MOOD_KEYS, ActivityCategory, MoodKey, SceneZone, coerce, value_of
 except ImportError:  # 直接按文件加载时
     from amo_enums import MOOD_KEYS, ActivityCategory, MoodKey, SceneZone, coerce, value_of
+
+try:
+    from .memory_guard import commit as _mem_commit, prepare as _mem_prepare
+except ImportError:  # pragma: no cover
+    try:
+        from memory_guard import commit as _mem_commit, prepare as _mem_prepare
+    except ImportError:
+        _mem_prepare = None
+        _mem_commit = None
 #: 真正算「生病」的状态；「疲惫」只是累，不该按病号排日程。
 SICK_STATUSES = ("轻微不适", "感冒", "低烧", "发烧", "不舒服", "生病", "拉肚子")
 MOOD_BASE = {
@@ -9028,6 +9037,15 @@ class HumanCorePlugin(Star):
         scope/group_id 必须一路传到数据终端：群聊写入 private、群聊却按 group 读，
         就会表现为“群里聊过但她完全不记得”。
         """
+        if _mem_prepare is not None:
+            try:
+                allowed, fixed, why = _mem_prepare(self.db, str(uid), content, _now(), now_ts())
+            except Exception:
+                allowed, fixed, why = True, content, "guard_error"
+            if not allowed:
+                logger.debug("[amo] 记忆没写（%s）: %s" % (why, str(content)[:40]))
+                return False
+            content = fixed
         hub = self._memory_hub()
         level = to_int(tier, 1)
         importance = 0.75 if level >= 2 else (0.55 if level == 1 else 0.35)
@@ -9038,6 +9056,7 @@ class HumanCorePlugin(Star):
                 logger.warning("[amo] 记忆写入异常: %s" % exc)
                 result = {"ok": False}
             if isinstance(result, dict) and result.get("ok"):
+                self._memory_committed(uid, content)
                 return True
             logger.warning(
                 "[amo] 记忆没写进去（%s）: %s" % ((result or {}).get("reason", "?"), str(content)[:40])
@@ -9049,8 +9068,20 @@ class HumanCorePlugin(Star):
             except Exception:
                 result = False
             if result:
+                self._memory_committed(uid, content)
                 return True
         return False
+
+    def _memory_committed(self, uid, content):
+        """记忆真的写进去了：登记去重指纹，并在同一天地点冲突时留一条 warning。"""
+        if _mem_commit is None:
+            return
+        try:
+            hint = _mem_commit(self.db, str(uid), str(content), _now(), now_ts())
+        except Exception:
+            return
+        if hint:
+            logger.warning("[amo] 记忆可能对不上：%s（%s）" % (hint, str(content)[:40]))
 
     def _external_memory_write(self, uid, content, kind="fact", tier=1, scope="private", group_id=""):
         """把一条记忆交给「记忆终端」：装了 Astr_Amo_data 就写它，没装才写外挂记忆插件。
