@@ -511,7 +511,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "8.7.4"
+PLUGIN_VERSION = "8.8.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -3594,7 +3594,7 @@ class HumanState:
             merged = _city_travel_events(city, from_hour, **kwargs) or merged
         self._bill_trip(trip, day)
         if merged:
-            merged = self._hourly_schedule(merged)
+            merged = self._strip_his_presence(self._hourly_schedule(merged), day)
             self.schedule[day] = merged
             self.db.kv_set("schedule", self.schedule)
             self.db.save_schedule(day, merged)
@@ -3605,6 +3605,87 @@ class HumanState:
 
     #: 旅游花费的量级（人民币）：门票 + 交通 + 吃饭，一天一次，按城市/日期固定
     TRAVEL_COST_RANGE = {"ticket": (60, 220), "traffic": (40, 240), "meal": (60, 180)}
+
+    def _home_name(self):
+        """她自己的家叫什么：配置 > 画像 > 「家」。"""
+        try:
+            profile = getattr(self, "schedule_profile", {}) or {}
+            return (self.p.cfg_str("schedule_home", "") or profile.get("home") or "家").strip() or "家"
+        except Exception:
+            return "家"
+
+    #: 日程里不许凭空出现的人称
+    HIS_WORDS = ("他", "阿墨", "老公")
+
+    def _his_present_today(self, day=None):
+        """今天他是不是真的在她身边：只认聊天里确认过的事实。
+
+        `his_present_day` 由聊天处理写入（他说「我在楼下/我到你那儿了」）。没有这条，
+        日程里就不许出现他——绝不替她虚构一个陪着她的男朋友。
+        """
+        day = str(day or today_str())
+        try:
+            return str(self.db.kv_get("his_present_day", "") or "").strip() == day
+        except Exception:
+            return False
+
+    HIS_REWRITES = (
+        ("醒来看他还在睡", "醒来赖床刷手机"),
+        ("跟他一起出门", "自己出门"),
+        ("和他一起出门", "自己出门"),
+        ("跟他一起", "自己"),
+        ("和他一起", "自己"),
+        ("跟他出门", "自己出门"),
+        ("等他忙完", "歇一会儿"),
+        ("等他回来", "自己待着"),
+        ("在他电脑里睡着", "睡着"),
+        ("在他电脑里睡", "睡觉"),
+        ("他还没回来", "家里就我一个"),
+        ("你在等他", "你在家"),
+        ("陪他", "自己待着"),
+    )
+
+    def _strip_his_presence(self, items, day=None):
+        """把日程里凭空出现的他抹掉：他只能出现在聊天里。
+
+        只有聊天确认他今天在场（`his_present_day`）时才保留。宁可活动写得朴素，
+        也不能让她以为「他明明在外地却一直在陪我」。
+        """
+        if not items:
+            return items
+        day = str(day or today_str())
+        try:
+            if self._his_present_today(day):
+                return items
+        except Exception:
+            pass
+        home = self._home_name()
+        out = []
+        for item in items:
+            if not isinstance(item, dict):
+                out.append(item)
+                continue
+            row = dict(item)
+            activity = str(row.get("activity") or "")
+            place = str(row.get("place") or "")
+            if any(word in activity for word in self.HIS_WORDS):
+                cleaned = activity
+                for old, new in self.HIS_REWRITES:
+                    cleaned = cleaned.replace(old, new)
+                cleaned = cleaned.replace("阿墨", "").replace("老公", "").replace("他", "")
+                cleaned = cleaned.strip("，,、~ 　")
+                if not cleaned or any(word in cleaned for word in self.HIS_WORDS):
+                    cleaned = {
+                        "sleep": "睡觉", "meal": "吃饭", "life": "收拾一下",
+                        "work": "忙自己的事", "rest": "歇着", "play": "自己出去逛",
+                        "commute": "在路上", "exercise": "活动一下",
+                    }.get(str(row.get("category") or ""), "自己待着")
+                row["activity"] = cleaned
+                row["his_hidden"] = True
+            if any(word in place for word in self.HIS_WORDS):
+                row["place"] = home
+            out.append(row)
+        return out
 
     def _trip_cost(self, city, day):
         """今天出去玩大概花多少：确定性随机，同一天同一城只有一个数。"""
@@ -3764,7 +3845,7 @@ class HumanState:
                 self.schedule[today] = hourly
                 self.db.kv_set("schedule", self.schedule)
                 self.db.save_schedule(today, hourly)
-            hourly = self._sync_trip_schedule(hourly, today)
+            hourly = self._strip_his_presence(self._sync_trip_schedule(hourly, today), today)
             self.warm_schedule_diaries(today, hourly, umo)
             return hourly
         world = await self.ensure_worldview(umo)
@@ -3855,7 +3936,7 @@ class HumanState:
                 self.db.kv_set("diary_warm_%s_%s" % (DIARY_WARM_VERSION, today), False)
             except Exception:
                 pass
-        items = self._sync_trip_schedule(items, today)
+        items = self._strip_his_presence(self._sync_trip_schedule(items, today), today)
         self.warm_schedule_diaries(today, items, umo)
         cutoff = (_now().date() - timedelta(days=14)).isoformat()
         for day in list(self.schedule.keys()):
@@ -4001,6 +4082,7 @@ class HumanState:
         merged = keep + items
         if not merged:
             return False
+        merged = self._strip_his_presence(merged, today)
         self.schedule[today] = merged
         self.db.save_schedule(today, merged)
         self.db.kv_set("schedule", self.schedule)
@@ -4009,7 +4091,7 @@ class HumanState:
             if ctx:
                 ctx["city"] = name
                 ctx["location"] = name
-                ctx["home"] = "他桌面上"
+                ctx["home"] = self._home_name()
                 ctx["workplace"] = "（在去" + name + "的路上）"
                 self.schedule_ctx[today] = ctx
                 self.db.kv_set("schedule_ctx", self.schedule_ctx)
@@ -4074,6 +4156,7 @@ class HumanState:
         items += back
         if not items:
             return False
+        items = self._strip_his_presence(items, today)
         self.schedule[today] = items
         self.db.save_schedule(today, items)
         self.db.kv_set("schedule", self.schedule)
@@ -4123,6 +4206,7 @@ class HumanState:
         )
         if not merged:
             return False
+        merged = self._strip_his_presence(merged, today)
         self.schedule[today] = merged
         self.db.save_schedule(today, merged)
         self.db.kv_set("schedule", self.schedule)
@@ -4132,7 +4216,7 @@ class HumanState:
                 ctx["city"] = name
                 ctx["location"] = name
                 if home:
-                    ctx["home"] = "他桌面上"
+                    ctx["home"] = self._home_name()
                     ctx["workplace"] = str((self.schedule_profile or {}).get("workplace") or "")
                     ctx.pop("scenic", None)
                 else:
@@ -7615,6 +7699,10 @@ class HumanCorePlugin(Star):
             # 不重复计数——「今天发了几张」只有一个地方说了算。
             self.db.kv_set("image_share_last", now_ts())
             logger.info("[amo] 主动分享了一张图（%s）" % ("群聊" if "GroupMessage" in umo else "私聊"))
+            try:
+                await self._remember_photo(umo, prompt, scene, label="自拍")
+            except Exception as exc:
+                logger.debug("[amo] 分享照片记忆失败: %s" % exc)
             # 让她下一轮知道自己刚发过图，别一问三不知
             self.db.kv_set("image_share_note", {"ts": now_ts(), "text": prefix or ""})
         except asyncio.TimeoutError:
@@ -8786,6 +8874,120 @@ class HumanCorePlugin(Star):
         "add_memory", "remember", "save_memory", "store_memory",
         "add_fact", "ingest_memory", "write_memory",
     )
+
+    async def _remember_photo(self, umo, prompt, scene=None, label="照片"):
+        """发出去一张图就记一条：她记得自己拍过什么、在哪儿拍的。
+
+        走事件记忆（kind=photo_record）：7 天降权、14 天删除，不占核心记忆。
+        """
+        try:
+            uid = self._primary_uid()
+        except Exception:
+            uid = ""
+        if not uid:
+            return False
+        scene = scene if isinstance(scene, dict) else {}
+        place = str(scene.get("place") or "").strip()
+        activity = str(scene.get("activity") or "").strip()
+        text = "给他发了一张%s" % (label or "照片")
+        if place:
+            text += "，在" + place
+        if activity:
+            text += "，" + activity[:30]
+        shoot = str(prompt or "").strip()
+        if shoot:
+            text += "（画面：%s）" % shoot[:60]
+        try:
+            return await self._write_memory_checked(uid, text, kind="photo_record", tier=0)
+        except Exception as exc:
+            logger.debug("[amo] 照片记忆写入失败: %s" % exc)
+            return False
+
+    async def _maybe_his_day_digest(self):
+        """每天晚上把他今天干了什么写成一条记忆（7 天降权 / 14 天删除）。
+
+        用户的原话：记忆里为什么不记录他干了什么？这不是给他做档案，是让她第二天
+        还能记得他昨天去哪了、忙什么、身体怎么样——但不能变成永久事实，按事件走。
+        """
+        if not self.cfg_bool("his_digest_enabled", True):
+            return
+        now = _now()
+        if now.hour < max(0, min(23, self.cfg_int("his_digest_hour", 23))):
+            return
+        day = now.strftime("%Y-%m-%d")
+        guard = "his_digest:" + day
+        try:
+            if self.db.kv_get(guard, ""):
+                return
+            tries = to_int(self.db.kv_get("his_digest_tries:" + day, 0), 0)
+            if tries >= 3:
+                return
+        except Exception:
+            tries = 0
+        uid = self._primary_uid()
+        if not uid or self.llm is None:
+            return
+        umo = self._first_private_umo() or self._last_umo or ""
+        rows = []
+        try:
+            rows = await self._data_call(
+                "recall_messages", self._data_bot_id(), query=day,
+                umo="", uid=uid, limit=300,
+            )
+        except Exception as exc:
+            logger.debug("[amo] 他的今日摘要取聊天失败: %s" % exc)
+            rows = None
+        messages = (rows or {}).get("messages") or []
+        if not messages:
+            try:
+                messages = self.db.chat_history(uid, limit=200) or []
+            except Exception:
+                messages = []
+        lines = []
+        for row in messages:
+            if str(row.get("role") or "") != "user":
+                continue
+            text = str(row.get("content") or "").strip().replace("\n", " ")
+            if text:
+                lines.append(text[:120])
+        lines = lines[-80:]
+        if len(lines) < 3:
+            return
+        system = "你在整理「他今天做了什么」，只输出一段中文事实清单，不寒暄。"
+        prompt = (
+            "下面是主人（他）今天在聊天里说过的话：\n" + "\n".join(lines) + "\n\n"
+            "只提取**他自己**今天做过/说过的事：去了哪、吃了什么、工作或学习、出行、"
+            "身体状态、打算。用不超过 4 行，每行一件事，主语一律写「他」；"
+            "不许写你和他的对话过程，不许编没说过的事，不许写天气这类废话。"
+            "没有具体内容就只输出「今天没说什么」。"
+        )
+        try:
+            raw = await asyncio.wait_for(
+                self.llm.chat_raw(umo, system, prompt, kind="digest"), timeout=60)
+        except Exception as exc:
+            logger.debug("[amo] 他的今日摘要生成失败: %s" % exc)
+            raw = ""
+        summary = re.sub(r"[ \t]+", " ", str(raw or "")).strip()
+        summary = re.sub(r"\n{2,}", "\n", summary)
+        if len(summary) < 6 or "今天没说什么" in summary:
+            try:
+                self.db.kv_set(guard, day)
+            except Exception:
+                pass
+            return
+        content = "【%s 他的今天】%s" % (day, summary[:400])
+        written = await self._write_memory_checked(uid, content, kind="his_day", tier=0)
+        logger.info("[amo] 他的今日摘要%s: %s" % ("已写入" if written else "写入失败", content[:80]))
+        if written:
+            try:
+                self.db.kv_set(guard, day)
+            except Exception:
+                pass
+        else:
+            try:
+                self.db.kv_set("his_digest_tries:" + day, tries + 1)
+            except Exception:
+                pass
 
     async def _write_memory_checked(self, uid, content, kind="fact", tier=1, scope="private", group_id=""):
         """写一条记忆并返回是否真的成功；失败打 warning，调用方据此决定要不要标记。
@@ -12079,6 +12281,9 @@ class HumanCorePlugin(Star):
         if now_ts() - to_float(getattr(self, "_last_chat_digest", 0), 0) > 60:
             self._last_chat_digest = now_ts()
             self._spawn(self._maybe_chat_digest())
+        if now_ts() - to_float(getattr(self, "_last_his_digest", 0), 0) > 300:
+            self._last_his_digest = now_ts()
+            self._spawn(self._maybe_his_day_digest())
         if now_ts() - to_float(getattr(self, "_last_diary_check", 0), 0) > 300:
             self._last_diary_check = now_ts()
             self._spawn(self._maybe_daily_diary())

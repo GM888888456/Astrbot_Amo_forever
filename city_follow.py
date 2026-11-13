@@ -131,16 +131,18 @@ def compose_block(city) -> str:
 DEFAULT_CITY = "东莞"
 
 # 回到东莞后的今天剩余时段（换城回来用）
+#: 宅家模板。地点写「家」由调用方换成画像里的家名；
+#: 这里不能出现「他」——她的日程里只写她自己在做什么。
 _HOME_DAY = (
-    (0, "睡觉", "他桌面上", "home", "sleep"),
-    (7, "赖床刷手机", "他桌面上", "home", "rest"),
-    (8, "起床洗漱", "他桌面上", "home", "life"),
-    (10, "窝着看剧", "他桌面上", "home", "rest"),
-    (12, "点外卖吃午饭", "他桌面上", "home", "meal"),
-    (14, "窝沙发刷手机", "他桌面上", "home", "rest"),
-    (18, "点外卖吃晚饭", "他桌面上", "home", "meal"),
-    (20, "听歌发呆", "他桌面上", "home", "rest"),
-    (23, "睡觉", "他桌面上", "home", "sleep"),
+    (0, "睡觉", "家", "home", "sleep"),
+    (7, "赖床刷手机", "家", "home", "rest"),
+    (8, "起床洗漱", "家", "home", "life"),
+    (10, "窝着看剧", "家", "home", "rest"),
+    (12, "点外卖吃午饭", "家", "home", "meal"),
+    (14, "窝沙发刷手机", "家", "home", "rest"),
+    (18, "点外卖吃晚饭", "家", "home", "meal"),
+    (20, "听歌发呆", "家", "home", "rest"),
+    (23, "睡觉", "家", "home", "sleep"),
 )
 
 
@@ -198,7 +200,7 @@ def _travel_plan(city, weekday: bool, spots):
     leave = "给公司发消息请了假，洗漱收拾" if weekday else "起床洗漱，拉开窗帘看外面的城"
     plan = [
         (0, "在酒店床上睡着", "酒店房间", "hotel", "sleep"),
-        (7, "醒来看他还在睡，窝着刷手机", "酒店房间", "hotel", "rest"),
+        (7, "醒了赖在床上刷手机", "酒店房间", "hotel", "rest"),
         (8, leave, "酒店房间", "hotel", "life"),
     ]
     if spots:
@@ -207,7 +209,7 @@ def _travel_plan(city, weekday: bool, spots):
         f_name = str(first.get("name") or "").strip()
         f_area = str(first.get("area") or "").strip()
         f_place = ("%s·%s" % (f_area, f_name)) if f_area and f_area not in name else ("%s·%s" % (name, f_name))
-        plan.append((9, "跟他一起出门，先去" + f_name, f_place, "scenic", "play"))
+        plan.append((9, "自己出门，先去" + f_name, f_place, "scenic", "play"))
         plan.append((10, "逛" + f_name + "：" + (_spot_project(first, 0) or "慢慢走慢慢看"), f_place, "scenic", "play"))
         plan.append((11, "在" + f_name + "继续逛：" + (_spot_project(first, 1) or "拍照"), f_place, "scenic", "play"))
         plan.append((12, "景区附近吃当地菜", name + "·小馆子", "restaurant", "meal"))
@@ -223,7 +225,7 @@ def _travel_plan(city, weekday: bool, spots):
             plan.append((15, "在" + f_name + "边逛边拍照", f_place, "scenic", "play"))
         plan.append((16, "找家咖啡店坐坐", name + "·咖啡店", "cafe", "rest"))
     else:
-        plan.append((9, "跟他一起出门，先去转转", "街头", "street", "play"))
+        plan.append((9, "自己出门，先去转转", "街头", "street", "play"))
         plan.append((10, "在" + name + "随便逛，走到哪算哪", "街头", "street", "play"))
         plan.append((11, "路边小店看看，买瓶水", "小店", "street", "play"))
         plan.append((12, "找家小馆子吃当地菜", "小馆子", "restaurant", "meal"))
@@ -232,7 +234,7 @@ def _travel_plan(city, weekday: bool, spots):
         plan.append((15, "在公园坐一会儿", "公园", "park", "rest"))
         plan.append((16, "找家咖啡店坐坐", "咖啡店", "cafe", "rest"))
     plan += [
-        (17, "回酒店等他忙完", "酒店房间", "hotel", "rest"),
+        (17, "回酒店歇着", "酒店房间", "hotel", "rest"),
         (19, "晚饭点当地的", "小馆子", "restaurant", "meal"),
         (20, "窝在床上刷手机", "酒店房间", "hotel", "rest"),
         (22, "洗澡护肤", "酒店房间", "hotel", "life"),
@@ -361,11 +363,11 @@ def travel_to_events(city, start_hour=9, spots=None, weekday=False, seed=""):
     mode = _TRANSPORT[digest % len(_TRANSPORT)]
     items = []
     if 0 < start <= 9:
-        items.append(_seg(0, "在他电脑里睡着", "他桌面上", "home", "sleep"))
+        items.append(_seg(0, "在家睡着", "家", "home", "sleep"))
     if 7 < start <= 9:
-        items.append(_seg(7, "醒来收拾东西，把要带的塞进包里", "他桌面上", "home", "life"))
+        items.append(_seg(7, "醒来收拾东西，把要带的塞进包里", "家", "home", "life"))
     if 8 < start <= 9:
-        items.append(_seg(8, "洗漱完，出门前再检查一遍", "他桌面上", "home", "life"))
+        items.append(_seg(8, "洗漱完，出门前再检查一遍", "家", "home", "life"))
     if start < 24:
         items.append(_seg(start, "出门去车站，坐" + mode + "去" + name,
                           "去" + name + "的路上", "road", "commute", transit="train"))

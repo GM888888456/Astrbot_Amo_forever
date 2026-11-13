@@ -714,6 +714,14 @@ class DrawEngine:
             if await self._send_image(event, image):
                 self._record(uid)
                 self._stats["sent"] += 1
+                remember = getattr(self.plugin, "_remember_photo", None)
+                if callable(remember):
+                    try:
+                        scene = self.plugin._activity_snapshot(umo)
+                        await remember(umo, prompt, scene,
+                                       label="自拍" if selfie else "照片")
+                    except Exception as _amo_exc:
+                        _note_swallowed("draw_engine.DrawEngine._run", _amo_exc)
             else:
                 self._stats["failed"] += 1
         except asyncio.CancelledError:
