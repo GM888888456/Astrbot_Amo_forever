@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.1.2"
+PLUGIN_VERSION = "9.1.3"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -7846,7 +7846,7 @@ class HumanCorePlugin(Star):
         used = to_int(info.get("used"), 0)
         return (info.get("allowed", True) is not False), used
 
-    async def _send_image_to_umo(self, umo, data, text="", quote_id=""):
+    async def _send_image_to_umo(self, umo, data, text="", quote_id="", label="照片", prompt=""):
         """在后台把图发到会话；用 context.send_message，不依赖已经结束的事件。
 
         带 `quote_id` 时把图挂在那条消息下面，用户一眼知道这张图接的是哪句话。
@@ -7880,6 +7880,11 @@ class HumanCorePlugin(Star):
             except Exception as retry_exc:
                 logger.error("[amo] 主动发图失败: %s" % retry_exc)
                 return False
+        # 发出去就记一条：以后「拍过什么」都能查得到，不靠调用方自觉
+        try:
+            await self._remember_photo(umo, prompt, {}, label=label)
+        except Exception as exc:
+            logger.debug("[amo] 发图后写记忆失败: %s" % exc)
         return True
 
     async def _share_decision(self, event):
