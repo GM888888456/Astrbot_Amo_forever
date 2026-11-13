@@ -533,7 +533,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.1.1"
+PLUGIN_VERSION = "9.1.2"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -3788,11 +3788,8 @@ class HumanState:
         if not items:
             return items
         day = str(day or today_str())
-        try:
-            if self._his_present_today(day):
-                return items
-        except Exception:
-            pass
+        # 他只能出现在聊天里：不管聊天里说没说他今天在，日程一律按她一个人写。
+        # （这里以前会因为 his_present_day 早退，于是日程里冒出「他在房间」）
         home = self._home_name()
         out = []
         for item in items:
@@ -6311,6 +6308,37 @@ class HumanCorePlugin(Star):
         word = self._outfit_command(text)
         if not word:
             return False
+        # 先看衣柜里有没有这件：有就穿；没有就记下来，等有空去市场买（别硬编一套）
+        wardrobe = getattr(self, "wardrobe", None)
+        hit = ""
+        try:
+            if wardrobe is not None:
+                for row in wardrobe.items(only_enabled=True):
+                    name = str(row.get("name") or "").strip()
+                    if name and (name in word or word in name):
+                        hit = name
+                        break
+        except Exception:
+            hit = ""
+        if wardrobe is not None and not hit:
+            try:
+                wishes = self.db.kv_get("outfit_wish", []) or []
+                if word not in wishes:
+                    wishes.append(word)
+                self.db.kv_set("outfit_wish", wishes[-50:])
+            except Exception:
+                pass
+            try:
+                await self.context.send_message(
+                    event.unified_msg_origin,
+                    "衣柜里没有%s，等我哪天去市场买。" % word)
+            except Exception:
+                pass
+            try:
+                event.stop_event()
+            except Exception:
+                pass
+            return True
         plugin = self._image_plugin()
         changer = getattr(plugin, "change_outfit_for", None) if plugin is not None else None
         if not callable(changer):
