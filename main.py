@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.8"
+PLUGIN_VERSION = "9.0.9"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -1475,6 +1475,15 @@ USAGE_DEFAULT_PRICES = {
     "miss_peak": 2.0, "miss_idle": 1.0,
     "out_peak": 8.0, "out_idle": 4.0,
 }
+
+
+def _hhmm_minutes(value) -> int:
+    """HH:MM → 分钟；坏值返回 -1。"""
+    try:
+        hour, minute = str(value).split(":")[:2]
+        return int(hour) * 60 + int(minute)
+    except Exception:
+        return -1
 
 
 def usage_clock(now=None, step: int = 15):
@@ -10277,6 +10286,180 @@ class HumanCorePlugin(Star):
             return "收了你的%s %s，我记着欠你 %.0f。" % (
                 kind, amount_text, float(owed or 0))
 
+    PHONE_POOL = ("iPhone 16", "iPhone 16 Pro", "小米 15", "华为 Mate 70", "OPPO Find X8")
+    PC_POOL = ("MacBook Air M4", "联想小新 Pro", "华硕天选 6", "华为 MateBook 14")
+
+    def _devices(self) -> dict:
+        """她手上的设备：手机、电脑（型号 + 开始用的日期）。没有就按今天往前推随机初始化。"""
+        try:
+            data = self.db.kv_get("devices", {}) or {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict) or not data.get("phone") or not data.get("pc"):
+            today = _clock_now().date()
+            data = {
+                "phone": data.get("phone") or {
+                    "model": random.choice(self.PHONE_POOL),
+                    "since": (today - timedelta(days=random.randint(200, 900))).isoformat(),
+                    "price": 5499,
+                },
+                "pc": data.get("pc") or {
+                    "model": random.choice(self.PC_POOL),
+                    "since": (today - timedelta(days=random.randint(300, 1400))).isoformat(),
+                    "price": 6999,
+                },
+            }
+            try:
+                self.db.kv_set("devices", data)
+            except Exception:
+                pass
+        return data
+
+    @staticmethod
+    def _device_age_days(item: dict) -> int:
+        try:
+            since = date.fromisoformat(str((item or {}).get("since") or ""))
+            return max(0, (_clock_now().date() - since).days)
+        except Exception:
+            return 0
+
+    def _device_wish(self) -> dict:
+        """当前最想换的那件（手机/电脑），没有就空 dict。"""
+        data = self._devices()
+        moods = {}
+        try:
+            moods = self.feelings.values() if getattr(self, "feelings", None) else {}
+        except Exception:
+            moods = {}
+        eye = float(moods.get("desire_eye") or 0)
+        mind = float(moods.get("desire_mind") or 0)
+        phone = data.get("phone") or {}
+        pc = data.get("pc") or {}
+        if eye >= 70 and self._device_age_days(phone) >= 240:
+            return {"kind": "phone", "current": phone,
+                    "model": random.choice(self.PHONE_POOL),
+                    "price": round(float(phone.get("price") or 5499) * 0.95, 2)}
+        if mind >= 75 and self._device_age_days(pc) >= 400:
+            return {"kind": "pc", "current": pc,
+                    "model": random.choice(self.PC_POOL),
+                    "price": round(float(pc.get("price") or 6999) * 0.9, 2)}
+        return {}
+
+    def _device_wish_tick(self) -> None:
+        """每天最多念一次：想换手机/电脑就写一条记忆，聊到的时候她会说。"""
+        wish = self._device_wish()
+        if not wish:
+            return
+        today = today_str()
+        try:
+            if self.db.kv_get("device_wish_day", "") == today:
+                return
+        except Exception:
+            pass
+        name = "手机" if wish["kind"] == "phone" else "电脑"
+        text = ("我想换%s了（现在用的%s，%d 天了）：想要 %s，大概 ¥%.0f"
+                % (name, (wish.get("current") or {}).get("model") or "旧的",
+                   self._device_age_days(wish.get("current") or {}),
+                   wish.get("model"), float(wish.get("price") or 0)))
+        uid = self._primary_uid()
+        if uid:
+            try:
+                self._spawn(self._write_memory_checked(uid, text, kind="event", tier=0))
+            except Exception:
+                pass
+        try:
+            self.db.kv_set("device_wish_day", today)
+            self.db.kv_set("device_wish", wish)
+        except Exception:
+            pass
+        logger.info("[amo] 想换设备：%s" % text)
+
+    @filter.llm_tool(name="amo_buy_device")
+    async def amo_buy_device(self, event, kind: str = "phone") -> str:
+        """换手机或电脑（她自己的钱，走金融账本）。
+
+        Args:
+            kind(string): phone 换手机 / pc 换电脑。
+        """
+        await self._ensure_ready()
+        data = self._devices()
+        wish = self._device_wish()
+        kind = "pc" if str(kind or "").strip().lower() in ("pc", "电脑", "laptop") else "phone"
+        if not wish or wish.get("kind") != kind:
+            # 没到欲望线也允许，但按现价算
+            item = data.get(kind) or {}
+            wish = {"kind": kind, "current": item,
+                    "model": random.choice(self.PC_POOL if kind == "pc" else self.PHONE_POOL),
+                    "price": float(item.get("price") or (6999 if kind == "pc" else 5499))}
+        name = "手机" if kind == "phone" else "电脑"
+        price = round(float(wish.get("price") or 0), 2)
+        rid = "device:%s:%s" % (kind, today_str())
+        result = await self.charge(price, reason="换%s" % name, payee=wish.get("model") or "数码店",
+                                   request_id=rid, source="device",
+                                   detail="%s → %s" % ((wish.get("current") or {}).get("model") or "旧的",
+                                                       wish.get("model")))
+        if not result.get("ok"):
+            return "现在换不了%s：%s。" % (name, result.get("reason") or "钱不够")
+        data[kind] = {"model": wish.get("model"), "since": today_str(), "price": price}
+        try:
+            self.db.kv_set("devices", data)
+            self.db.kv_set("device_wish", {})
+            self.db.kv_set("device_wish_day", "")
+        except Exception:
+            pass
+        try:
+            self.feel(FeelEvent.MONEY_TIGHT)
+        except Exception:
+            pass
+        return "换了新%s：%s（¥%.0f，余额 ¥%.0f）。" % (
+            name, wish.get("model"), price, float(result.get("balance") or 0))
+
+    def _bill_meals(self) -> None:
+        """日程里正在吃饭却一直没扣钱：按地点补扣一次，同一天同一格只扣一次。"""
+        if getattr(self, "state", None) is None:
+            return
+        now = _clock_now()
+        today = now.date().isoformat()
+        items = self.state.schedule.get(today) or []
+        current = None
+        current_minute = now.hour * 60 + now.minute
+        for item in items:
+            start = _hhmm_minutes(item.get("start"))
+            end = _hhmm_minutes(item.get("end"))
+            if start <= current_minute < end:
+                current = item
+                break
+        if not current or str(current.get("category") or "") != "meal":
+            return
+        rid = "meal:%s:%s" % (today, str(current.get("start") or ""))
+        try:
+            if self.db.kv_get("meal_billed:" + rid, False):
+                return
+        except Exception:
+            pass
+        activity = str(current.get("activity") or "")
+        place = str(current.get("place") or "")
+        if "做饭" in activity or "下厨" in activity:
+            cost, payee, reason = 22.0, "菜场", "做饭"
+        elif "外卖" in activity or "家" in place:
+            cost, payee, reason = 36.0, "外卖", "外卖"
+        else:
+            cost, payee, reason = 58.0, (place or "餐馆"), "吃饭"
+
+        async def run():
+            result = await self.charge(cost, reason=reason, payee=payee,
+                                       request_id=rid, source="meal")
+            if isinstance(result, dict) and result.get("ok"):
+                try:
+                    self.db.kv_set("meal_billed:" + rid, True)
+                except Exception:
+                    pass
+
+        try:
+            self._spawn(run())
+        except Exception as exc:
+            logger.debug("[amo] 吃饭扣款任务起不来: %s" % exc)
+
     def _period_feel_tick(self) -> None:
         """生理期开始/结束时给心流发一次事件（每天最多一次）。"""
         if getattr(self, "feelings", None) is None or FeelEvent is None:
@@ -12417,6 +12600,15 @@ class HumanCorePlugin(Star):
             # 破坏模型侧缓存（成本涨 7-20 倍），上架审核也会因此被拒。
             body = "<amo_state>\n" + context_text + "\n</amo_state>"
             try:
+                wish = self.db.kv_get("device_wish", {}) or {}
+                if isinstance(wish, dict) and wish.get("model"):
+                    body += ("\n【想换设备】你最近很想换%s：想要 %s（大概 ¥%.0f）。"
+                             "聊到手机/电脑/花钱时可以说出来；真要买就调用 amo_buy_device。"
+                             % ("手机" if wish.get("kind") == "phone" else "电脑",
+                                wish.get("model"), float(wish.get("price") or 0)))
+            except Exception:
+                pass
+            try:
                 if self.draw is not None and self.draw.wants_photo(event):
                     body += (
                         "\n【拍照请求】他这轮明确想要一张照片：自然答应（可以害羞、可以说等一下），"
@@ -13008,6 +13200,14 @@ class HumanCorePlugin(Star):
             self._period_feel_tick()
         except Exception as exc:
             logger.debug("[amo] 生理期事件失败: %s" % exc)
+        try:
+            self._bill_meals()
+        except Exception as exc:
+            logger.debug("[amo] 吃饭补扣失败: %s" % exc)
+        try:
+            self._device_wish_tick()
+        except Exception as exc:
+            logger.debug("[amo] 换设备念头失败: %s" % exc)
         self.state.decay_mood()
         if self.state.last_daily != today_str():
             self.state.daily_tick()

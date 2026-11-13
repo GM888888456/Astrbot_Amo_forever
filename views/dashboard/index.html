@@ -215,6 +215,7 @@
     .theme-btn.active { color: var(--pink); border-color: var(--pink); }
     .status-shell { display: flex; flex-direction: column; }
     .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+    #radar { width: 240px; height: 240px; margin: 6px auto 0; display: block; touch-action: manipulation; }
     /* 24 小时计价格：高峰=橙，空闲=青，红线是此刻 */
     .peak-clock { margin-top: 14px; }
     .clock-track { position: relative; display: flex; height: 10px; border-radius: 999px;
@@ -423,11 +424,8 @@
           </div>
           <div class="hero-score"><span id="moodScore">--</span><small>/100</small></div>
         </div>
-        <div class="bars" id="moodBars"></div>
-        <details class="desire-fold" style="margin-top:10px">
-          <summary>六欲（点开看，只读）</summary>
-          <div class="bars" id="desireBars"></div>
-        </details>
+        <canvas id="radar" width="300" height="300"></canvas>
+        <div class="sub" id="radarHint" style="text-align:center;margin-top:4px">双击切换：七情 ↔ 六欲（只读）</div>
         <div class="sub" id="physioLine" style="margin-top:8px">—</div>
 
         <div class="status-grid">
@@ -1583,36 +1581,118 @@
     }
 
     /* 七情只读；六欲折在 details 里；数值只能由事件驱动，面板改不了 */
+    let radarMode = "emotion";   // emotion = 七情，desire = 六欲
+    let radarValues = {};
+
+    function drawRadarNow() {
+      const canvas = document.getElementById("radar");
+      if (!canvas) return;
+      const emotionKeys = Object.keys(EMOTION_CN);
+      const desireKeys = Object.keys(DESIRE_CN);
+      const keys = radarMode === "desire" ? desireKeys : emotionKeys;
+      const labels = radarMode === "desire" ? DESIRE_CN : EMOTION_CN;
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const size = 230;
+      canvas.style.width = size + "px";
+      canvas.style.height = size + "px";
+      canvas.width = size * dpr;
+      canvas.height = size * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, size, size);
+      const cx = size / 2, cy = size / 2, radius = size / 2 - 30;
+      const step = (Math.PI * 2) / keys.length;
+      ctx.strokeStyle = "rgba(128,128,128,.28)";
+      ctx.lineWidth = 1;
+      for (let ring = 1; ring <= 4; ring += 1) {
+        ctx.beginPath();
+        keys.forEach((_, i) => {
+          const angle = -Math.PI / 2 + step * i;
+          const r = radius * ring / 4;
+          const x = cx + Math.cos(angle) * r;
+          const y = cy + Math.sin(angle) * r;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
+        ctx.stroke();
+      }
+      const points = [];
+      keys.forEach((key, i) => {
+        const angle = -Math.PI / 2 + step * i;
+        const value = Math.max(0, Math.min(100, Number(radarValues[key] || 0)));
+        const r = radius * value / 100;
+        points.push([cx + Math.cos(angle) * r, cy + Math.sin(angle) * r]);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+        ctx.stroke();
+        const lx = cx + Math.cos(angle) * (radius + 14);
+        const ly = cy + Math.sin(angle) * (radius + 14);
+        ctx.fillStyle = "rgba(120,120,128,.9)";
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(labels[key], lx, ly);
+      });
+      if (points.length) {
+        ctx.beginPath();
+        points.forEach(([x, y], i) => { if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+        ctx.closePath();
+        ctx.fillStyle = "rgba(216,59,59,.18)";
+        ctx.fill();
+        ctx.strokeStyle = "#d83b3b";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        points.forEach(([x, y]) => {
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fillStyle = "#d83b3b";
+          ctx.fill();
+        });
+      }
+    }
+
     function renderHeartflow(hf) {
       const values = hf || {};
-      const bars = document.getElementById("moodBars");
-      if (bars) {
-        bars.textContent = "";
-        let total = 0, topName = "—", topValue = -1;
-        Object.keys(EMOTION_CN).forEach((key) => {
-          const value = Math.max(0, Math.min(100, Number(values[key] || 0)));
-          total += value;
-          if (value > topValue) { topValue = value; topName = EMOTION_CN[key]; }
-          bars.appendChild(heartflowRow(EMOTION_CN[key], value));
-        });
-        const dominant = document.getElementById("dominant");
-        if (dominant) dominant.textContent = topValue >= 0 ? topName : "—";
-        const score = document.getElementById("moodScore");
-        if (score) score.textContent = String(Math.round(total / 7));
-      }
-      const desires = document.getElementById("desireBars");
-      if (desires) {
-        desires.textContent = "";
-        Object.keys(DESIRE_CN).forEach((key) => {
-          desires.appendChild(heartflowRow(DESIRE_CN[key], Math.max(0, Math.min(100, Number(values[key] || 0)))));
-        });
-      }
+      radarValues = values;
+      let total = 0, topName = "—", topValue = -1;
+      Object.keys(EMOTION_CN).forEach((key) => {
+        const value = Math.max(0, Math.min(100, Number(values[key] || 0)));
+        total += value;
+        if (value > topValue) { topValue = value; topName = EMOTION_CN[key]; }
+      });
+      const dominant = document.getElementById("dominant");
+      if (dominant) dominant.textContent = topValue >= 0 ? topName : "—";
+      const score = document.getElementById("moodScore");
+      if (score) score.textContent = String(Math.round(total / 7));
       const physio = document.getElementById("physioLine");
       if (physio) {
         physio.textContent = "生理：饿 " + Math.round(Number(values.hunger || 0)) +
           " · 精力 " + Math.round(Number(values.energy || 0));
       }
+      drawRadarNow();
     }
+
+    const radarCanvas = document.getElementById("radar");
+    if (radarCanvas) {
+      radarCanvas.addEventListener("dblclick", () => {
+        radarMode = radarMode === "desire" ? "emotion" : "desire";
+        drawRadarNow();
+      });
+      // 手机上双击不总触发，补一个短按两次的判定
+      let lastTap = 0;
+      radarCanvas.addEventListener("touchend", () => {
+        const now = Date.now();
+        if (now - lastTap < 320) {
+          radarMode = radarMode === "desire" ? "emotion" : "desire";
+          drawRadarNow();
+          lastTap = 0;
+        } else {
+          lastTap = now;
+        }
+      });
+    }
+    window.addEventListener("resize", () => { if (radarValues) drawRadarNow(); });
 
     let usageLoaded = false;
 
