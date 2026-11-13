@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.0"
+PLUGIN_VERSION = "9.0.1"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -14185,6 +14185,7 @@ class HumanCorePlugin(Star):
             "time": snap["datetime_text"],
             "day": day_meta(),
             "mood": snap["mood"],
+            "heartflow": (self.feelings.values() if getattr(self, "feelings", None) else {}),
             "dominant": snap["dominant"],
             "mood_score": round(snap["mood_score"], 1),
             "period": snap["period"],
@@ -14721,8 +14722,6 @@ class HumanCorePlugin(Star):
             ("/wardrobe/wear", self.api_wardrobe_wear, ["GET", "POST"]),
             ("/schedule/detail", self.api_schedule_detail, ["GET", "POST"]),
             ("/schedule_detail", self.api_schedule_detail, ["GET", "POST"]),
-            ("/mood/update", self.api_mood_update, ["GET", "POST"]),
-            ("/mood_update", self.api_mood_update, ["GET", "POST"]),
             ("/schedule/regen", self.api_schedule_regen, ["GET", "POST"]),
             ("/kb/regen", self.api_kb_regen, ["GET", "POST"]),
             ("/scenic_kb/regen", self.api_scenic_kb_regen, ["GET", "POST"]),
@@ -16400,8 +16399,6 @@ class HumanCorePlugin(Star):
                 return await self.api_memory_add()
             if name in ("memory_delete", "delete_memory"):
                 return await self.api_memory_delete()
-            if name in ("mood_update", "update_mood"):
-                return await self.api_mood_update()
             if name == "schedule":
                 return await self.api_schedule()
             if name in ("scenic_kb_regen", "regen_scenic_kb"):
@@ -16598,19 +16595,6 @@ class HumanCorePlugin(Star):
             "code": 1,
             "msg": "记忆由记忆终端保存，请到「我想永远陪着你-记忆」面板里删除",
         }
-
-    async def api_mood_update(self):
-        await self._ensure_ready()
-        data = await self._body()
-        incoming = data.get("mood") if isinstance(data.get("mood"), dict) else data
-        for key in MOOD_KEYS:
-            if key in incoming:
-                try:
-                    self.state.mood[key] = clamp(float(incoming[key]), 0.0, 100.0)
-                except Exception:
-                    continue
-        self.state.save()
-        return {"code": 0, "data": self.state.snapshot()}
 
     async def api_schedule(self):
         await self._ensure_ready()
