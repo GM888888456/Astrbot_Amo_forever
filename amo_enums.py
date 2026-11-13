@@ -84,6 +84,12 @@ def coerce(enum_cls, value, default=None):
     for item in enum_cls:
         if item.value == text:
             return item
+    # 大小写不一致也算认出来（历史脏数据里常有 "Sleep" / "SCENIC"）
+    lowered = text.lower()
+    if lowered and text == text.strip():
+        for item in enum_cls:
+            if item.value.lower() == lowered:
+                return item
     if default is not None:
         try:
             return enum_cls(default)

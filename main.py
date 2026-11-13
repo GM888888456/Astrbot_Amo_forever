@@ -530,7 +530,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.0.7"
+PLUGIN_VERSION = "9.0.8"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -3967,7 +3967,8 @@ class HumanState:
                 self.schedule[today] = hourly
                 self.db.kv_set("schedule", self.schedule)
                 self.db.save_schedule(today, hourly)
-            hourly = self._strip_his_presence(self._sync_trip_schedule(hourly, today), today)
+            hourly = self._normalize_items(
+                self._strip_his_presence(self._sync_trip_schedule(hourly, today), today))
             self.warm_schedule_diaries(today, hourly, umo)
             return hourly
         world = await self.ensure_worldview(umo)
@@ -4058,7 +4059,8 @@ class HumanState:
                 self.db.kv_set("diary_warm_%s_%s" % (DIARY_WARM_VERSION, today), False)
             except Exception:
                 pass
-        items = self._strip_his_presence(self._sync_trip_schedule(items, today), today)
+        items = self._normalize_items(
+            self._strip_his_presence(self._sync_trip_schedule(items, today), today))
         self.warm_schedule_diaries(today, items, umo)
         cutoff = (_now().date() - timedelta(days=14)).isoformat()
         for day in list(self.schedule.keys()):
@@ -4672,6 +4674,28 @@ class HumanState:
             return bool(self._active_trip())
         except Exception:
             return False
+
+    @staticmethod
+    def _normalize_items(items):
+        """把 category/zone 归一成枚举值：大小写、空格修掉，认不出的原样保留。"""
+        out = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                out.append(item)
+                continue
+            row = dict(item)
+            category = str(row.get("category") or "").strip()
+            if category:
+                fixed = value_of(ActivityCategory, category, default="")
+                if fixed:
+                    row["category"] = fixed
+            zone = str(row.get("zone") or "").strip()
+            if zone:
+                fixed_zone = value_of(SceneZone, zone, default="")
+                if fixed_zone:
+                    row["zone"] = fixed_zone
+            out.append(row)
+        return out
 
     def current_activity(self):
         items = self.schedule.get(today_str()) or []

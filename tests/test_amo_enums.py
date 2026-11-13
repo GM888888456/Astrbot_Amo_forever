@@ -51,14 +51,19 @@ class CoerceTests(unittest.TestCase):
         self.assertIs(coerce(MoodKey, MoodKey.HAPPY), MoodKey.HAPPY)
 
     def test_unknown_returns_default(self):
-        self.assertIs(coerce(ActivityCategory, "Sleep", default="rest"),
+        self.assertIs(coerce(ActivityCategory, "sleeping", default="rest"),
                       ActivityCategory.REST)
         self.assertIsNone(coerce(ActivityCategory, "???"))
+
+    def test_case_insensitive(self):
+        self.assertIs(coerce(ActivityCategory, "Sleep"), ActivityCategory.SLEEP)
+        self.assertIs(coerce(SceneZone, "SCENIC"), SceneZone.SCENIC)
 
     def test_dirty_value_does_not_raise(self):
         # 历史脏数据不能把链路打挂：能修的修（去掉空格），修不了的退回默认值
         self.assertEqual(value_of(ActivityCategory, " sleep ", default=""), "sleep")
-        self.assertEqual(value_of(ActivityCategory, "Sleep", default="rest"), "rest")
+        self.assertEqual(value_of(ActivityCategory, "sleeping", default="rest"), "rest")
+        self.assertEqual(value_of(ActivityCategory, "Sleep", default="rest"), "sleep")
         self.assertEqual(value_of(SceneZone, "景区", default="street"), "street")
 
 
