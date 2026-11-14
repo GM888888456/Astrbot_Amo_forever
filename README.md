@@ -6,6 +6,13 @@
 
 > 使用手册见 [wiki/](wiki/)：安装、金融、医疗、记忆与遗忘、相片一致性、常见问题。
 
+## 9.6.0（基线可配 + 清掉一个死键）
+
+- 基线规则暴露成配置：`baseline_private_money`、`baseline_group_money`、`baseline_group_complain`、`approve_threshold`、`defer_group_money`、`label_stale_seconds`、`label_drop_seconds`。群聊想放开买东西，关掉 `defer_group_money` 或调高权重即可，不用改代码。
+- 删掉 `draw_private_only`：全仓库零引用，唯一确认的死键。
+- 其余 33 个旧配置键与 14 条旧路由**确认仍在使用**（面板在调 `photo/job`、`photo/last`、`diary/tree`），不动。
+- 全量测试 903 条。
+
 ## 9.5.9（阶段 4：市场购买走提案）
 
 - 新增 `_approved_charge()`：提案 → 审批 → `charge()` → 回执，一条通用口；驳回/暂缓直接不扣。
