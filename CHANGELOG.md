@@ -1,5 +1,13 @@
 # Changelog
 
+## 9.5.8（阶段 4 起步：事件总线接进终端）
+
+- 终端新增 `event_bus()` / `submit_event()` / `event_receipt()` / `event_status()`：插件交提案拿 allow/deny/defer，执行完回执，终端归档。
+- 心流打分先接配置分 `event_default_score`（0.8），以后换心流只改 `_event_score()` 一个函数。
+- 新增 `/events` 接口：提案数、放行/驳回/暂缓、重复、冲突、回执数，排查用。
+- 三个配置：`event_bus_enable`（默认开）、`event_default_score`、`event_retry_after`。
+- 医疗/市场下一轮改调 `submit_event`，`charge()` 的幂等链路不动。
+- 测试：新增 6 条，全量 898 条通过。
 ## 9.5.7（阶段 2/3：身体与钱包改标签）
 
 - 新增 `instinct_mode`（默认关）：打开后身体只注入 `[Body: Hunger=..., Thirst=..., Last_Meal=..., ts=...]`，钱包只注入 `[Wallet: Cash=..., Savings=..., Total=..., Debt=..., ts=...]`，不再写「饿得手发抖」「卡里还有…」这类长句。

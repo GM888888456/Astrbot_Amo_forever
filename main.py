@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.5.7"
+PLUGIN_VERSION = "9.5.8"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -1146,6 +1146,16 @@ except Exception:
         import label_bus as _label_bus
     except Exception:  # pragma: no cover
         _label_bus = None
+
+try:
+    from . import baseline as _baseline
+    from . import event_bus as _event_bus_mod
+except Exception:
+    try:
+        import baseline as _baseline
+        import event_bus as _event_bus_mod
+    except Exception:  # pragma: no cover
+        _baseline = _event_bus_mod = None
 
 try:
     from .guard_bridge import deliver_reply as _guard_deliver_reply
@@ -16178,6 +16188,7 @@ class HumanCorePlugin(Star):
             ("/status", self.api_status, ["GET"]),
             ("/records", self.api_records, ["GET", "POST"]),
             ("/get_status", self.api_get_status, ["GET"]),
+            ("/events", self.api_events, ["GET", "POST"]),
             ("/diary/tree", self.api_diary_tree, ["GET", "POST"]),
             ("/diary/read", self.api_diary_read, ["GET", "POST"]),
             ("/diary/write", self.api_diary_write, ["POST"]),
@@ -17904,6 +17915,10 @@ class HumanCorePlugin(Star):
             return {"code": 1, "msg": "记录返回异常"}
         return {"code": 0, "data": data}
 
+    async def api_events(self):
+        """事件总线观测：统计 + 最近几条，排查用。"""
+        return self._json({"code": 0, "data": self.event_status()})
+
     async def api_diary_tree(self):
         await self._ensure_ready()
         if not callable(_diary_tree):
@@ -18588,6 +18603,61 @@ class HumanCorePlugin(Star):
             self.db.kv_set("charge_ok", stored)
         except Exception as exc:
             logger.debug("[amo] 幂等号落库失败: %s" % exc)
+
+    # ---------- 事件总线：插件只能提案，审批与回执在终端 ----------
+
+    def event_bus(self):
+        """懒加载一条事件总线；没装模块时返回 None。"""
+        if _baseline is None or _event_bus_mod is None:
+            return None
+        bus = getattr(self, "_event_bus_instance", None)
+        if bus is None:
+            try:
+                baseline = _baseline.Baseline(self.config)
+            except Exception:
+                baseline = _baseline.Baseline()
+            bus = _event_bus_mod.EventBus(
+                baseline,
+                scorer=self._event_score,
+                retry_after=max(0, self.cfg_int("event_retry_after", 60)),
+            )
+            self._event_bus_instance = bus
+        return bus
+
+    def _event_score(self, proposal) -> float:
+        """心流打分的占位实现：先用配置分，接心流时只换这一个函数。"""
+        try:
+            return float(self.cfg_float("event_default_score", 0.8))
+        except Exception:
+            return 0.8
+
+    def submit_event(self, raw) -> dict:
+        """插件入口：交一个提案，拿 allow / deny / defer。"""
+        event_id = str((raw or {}).get("event_id") or "") if isinstance(raw, dict) else ""
+        if not self.cfg_bool("event_bus_enable", True):
+            return {"event_id": event_id, "approved": True, "decision": "allow",
+                    "reason": "事件总线关闭", "score": 1.0, "fallback": ""}
+        bus = self.event_bus()
+        if bus is None:
+            return {"event_id": event_id, "approved": True, "decision": "allow",
+                    "reason": "事件总线模块未加载", "score": 1.0, "fallback": ""}
+        return bus.submit(raw)
+
+    def event_receipt(self, raw) -> dict:
+        """插件入口：执行完（成功/失败）回执，终端据此归档。"""
+        if not self.cfg_bool("event_bus_enable", True):
+            return {"accepted": False, "ack": False, "reason": "事件总线关闭"}
+        bus = self.event_bus()
+        if bus is None:
+            return {"accepted": False, "ack": False, "reason": "事件总线模块未加载"}
+        return bus.receipt(raw)
+
+    def event_status(self) -> dict:
+        bus = self.event_bus()
+        if bus is None:
+            return {"enabled": False, "stats": {}, "recent": {}}
+        return {"enabled": self.cfg_bool("event_bus_enable", True),
+                "stats": bus.stats(), "recent": bus.recent(10)}
 
     async def charge(self, amount, reason: str = "", payee: str = "",
                      request_id: str = "", source: str = "", detail: str = "",

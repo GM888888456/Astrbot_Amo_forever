@@ -1569,4 +1569,23 @@
     "description": "本能模式（身体只给标签）",
     "default": false,
     "hint": "打开后身体事实只注入 [Body: Hunger=..., ts=...] 标签，不再写「饿得手发抖」这类长句；兜底喂食不变。先灰度再全量。"
-  }}
+  },
+  "event_bus_enable": {
+    "type": "bool",
+    "description": "启用事件总线",
+    "default": true,
+    "hint": "插件交提案、终端审批并记回执。关掉后插件拿到的都是 allow，等同旧链路。"
+  },
+  "event_default_score": {
+    "type": "float",
+    "description": "事件默认心流分",
+    "default": 0.8,
+    "hint": "接心流之前的占位分：0.8 × 场景权重 ≥ 0.5 就放行。"
+  },
+  "event_retry_after": {
+    "type": "int",
+    "description": "失败回执重试窗口（秒）",
+    "default": 60,
+    "hint": "失败不长期占用幂等，过了这个时间同一个 event_id 可以重试。"
+  }
+}
