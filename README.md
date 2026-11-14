@@ -6,6 +6,15 @@
 
 > 使用手册见 [wiki/](wiki/)：安装、金融、医疗、记忆与遗忘、相片一致性、常见问题。
 
+## 9.3.6（衣柜搬进记忆库）
+
+- 衣服库不再存本地 `wardrobe.json`，改存记忆插件（`Astr_Amo_data` 3.0.9 的 `wardrobe` 表）。
+- 启动 / 打开面板时从记忆库拉一份到内存快照，挑衣服还是同步读，不拖慢日程生成。
+- 买衣服、改搭配、删衣服都走异步落库；记忆插件不在或超时就退回本地 JSON，不会把衣服弄丢。
+- 旧 `wardrobe.json` 第一次启动会自动灌进记忆库，**原文件保留**（要回滚随时能回去）。
+- 搭配规则（场景、JK 硬配对、按天挑哪套）**一条没搬**，仍然归终端。
+- 新增 3 条衣柜用例（记忆库读写、旧 JSON 迁移），798 条测试全绿。
+
 ## 9.3.5（清理死导入和死变量）
 
 - 删掉未使用导入：`sleep_cycle.SleepPhase`、`amo_enums.MoodKey`/`coerce`、`datetime as _dt`、`re`、`hashlib`、`event_filter`、`dataclasses.field`、`Star`。

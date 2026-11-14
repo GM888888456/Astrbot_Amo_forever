@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """服装库：他添的衣服、日程从库里挑、说话换装。"""
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -64,13 +65,13 @@ class WardrobeTests(unittest.TestCase):
         self.store = self.plugin.wardrobe
 
     def test_add_and_list(self):
-        item = self.store.add("米色针织开衫", scenes=["work", "out"])
+        item = asyncio.run(self.store.add("米色针织开衫", scenes=["work", "out"]))
         self.assertTrue(item.get("id"))
         self.assertEqual(len(self.store.items()), 1)
 
     def test_duplicate_merges(self):
-        self.store.add("米色针织开衫")
-        self.store.add("米色针织开衫", scenes=["home"])
+        asyncio.run(self.store.add("米色针织开衫"))
+        asyncio.run(self.store.add("米色针织开衫", scenes=["home"]))
         self.assertEqual(len(self.store.items()), 1)
 
     def test_scene_guess(self):
@@ -79,18 +80,18 @@ class WardrobeTests(unittest.TestCase):
         self.assertIn("work", wardrobe_mod.guess_scenes("西装套装"))
 
     def test_pool_filters_gender_and_scene(self):
-        self.store.add("男款夹克", scenes=["out"], gender="男")
-        self.store.add("女款外套", scenes=["out"], gender="女")
+        asyncio.run(self.store.add("男款夹克", scenes=["out"], gender="男"))
+        asyncio.run(self.store.add("女款外套", scenes=["out"], gender="女"))
         self.assertEqual(self.store.pool("女", "out"), ["女款外套"])
         self.assertEqual(self.store.pool("男", "out"), ["男款夹克"])
 
     def test_match_text(self):
-        self.store.add("米色针织开衫", scenes=["out"])
+        asyncio.run(self.store.add("米色针织开衫", scenes=["out"]))
         hit = self.store.match_text("今天换上米色针织开衫吧")
         self.assertEqual(hit.get("name"), "米色针织开衫")
 
     def test_persist_to_disk(self):
-        self.store.add("白色衬衫", scenes=["work"])
+        asyncio.run(self.store.add("白色衬衫", scenes=["work"]))
         again = wardrobe_mod.Wardrobe(self.plugin)
         self.assertEqual(len(again.items()), 1)
 
@@ -102,7 +103,7 @@ class OutfitFromWardrobeTests(unittest.TestCase):
         self.engine = outfit_engine.OutfitEngine(self.plugin)
 
     def test_schedule_uses_wardrobe(self):
-        self.plugin.wardrobe.add("藏青色西装套装", scenes=["work", "formal"])
+        asyncio.run(self.plugin.wardrobe.add("藏青色西装套装", scenes=["work", "formal"]))
         items = [{"start": "09:00", "end": "18:00", "activity": "上班",
                   "place": "公司", "category": "work"}]
         self.engine.assign(items, DAY)
@@ -115,7 +116,7 @@ class OutfitFromWardrobeTests(unittest.TestCase):
         self.assertTrue(items[0].get("outfit"))
 
     def test_override_from_hour(self):
-        self.plugin.wardrobe.add("红色连衣裙", scenes=["casual", "out"])
+        asyncio.run(self.plugin.wardrobe.add("红色连衣裙", scenes=["casual", "out"]))
         items = [
             {"start": "09:00", "end": "18:00", "activity": "上班",
              "place": "公司", "category": "work"},
@@ -130,7 +131,7 @@ class OutfitFromWardrobeTests(unittest.TestCase):
         self.assertEqual(items[1]["outfit"], "红色连衣裙")
 
     def test_override_survives_reassign(self):
-        self.plugin.wardrobe.add("红色连衣裙", scenes=["out"])
+        asyncio.run(self.plugin.wardrobe.add("红色连衣裙", scenes=["out"]))
         self.engine.change_outfit(DAY, "红色连衣裙", from_hour="00:00")
         items = [{"start": "19:00", "end": "21:00", "activity": "逛街",
                   "place": "商场", "category": "play"}]
@@ -148,11 +149,60 @@ class OutfitCommandTests(unittest.TestCase):
     def test_prefers_wardrobe_name(self):
         tmp = tempfile.mkdtemp()
         fake = FakePlugin(tmp)
-        fake.wardrobe.add("米色针织开衫", scenes=["out"])
+        asyncio.run(fake.wardrobe.add("米色针织开衫", scenes=["out"]))
         plugin = object.__new__(amo_main.HumanCorePlugin)
         plugin.wardrobe = fake.wardrobe
         self.assertEqual(
             plugin._outfit_change_request("换上米色针织开衫好不好"), "米色针织开衫")
+
+
+class MemoryBackedWardrobeTests(unittest.TestCase):
+    """有数据插件时，写操作应该走记忆库，而不是再写本地 JSON。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.plugin = FakePlugin(self.tmp)
+        self.calls = []
+
+        async def fake_data_call(name, *args, **kwargs):
+            self.calls.append(name)
+            if name == "wardrobe_rows":
+                return [{"id": "w1", "name": "记忆库里的白衬衫", "slot": "top",
+                         "scenes": ["work"], "gender": "女", "note": "",
+                         "enabled": True, "created": 1.0}]
+            if name == "wardrobe_save":
+                return True
+            if name == "wardrobe_delete":
+                return True
+            if name == "wardrobe_replace_all":
+                return len(args[-1]) if args else 0
+            return None
+
+        self.plugin._data_call = fake_data_call
+        self.store = wardrobe_mod.Wardrobe(self.plugin)
+
+    def test_refresh_pulls_from_memory(self):
+        asyncio.run(self.store.refresh())
+        self.assertEqual([item["name"] for item in self.store.items()], ["记忆库里的白衬衫"])
+
+    def test_save_goes_to_memory_not_json(self):
+        asyncio.run(self.store.refresh())
+        asyncio.run(self.store.add("新的米色外套", scenes=["out"]))
+        self.assertIn("wardrobe_save", self.calls)
+        self.assertFalse(os.path.exists(self.store.path))
+
+    def test_legacy_json_migrates_into_memory_once(self):
+        with open(self.store.path, "w", encoding="utf-8") as handle:
+            handle.write('{"items": [{"id": "w9", "name": "旧牛仔裤", "slot": "bottom"}]}')
+
+        async def empty_rows(name, *args, **kwargs):
+            self.calls.append(name)
+            return [] if name == "wardrobe_rows" else 1
+
+        self.plugin._data_call = empty_rows
+        asyncio.run(self.store.refresh())
+        self.assertIn("wardrobe_replace_all", self.calls)
+        self.assertEqual([item["name"] for item in self.store.items()], ["旧牛仔裤"])
 
 
 if __name__ == "__main__":

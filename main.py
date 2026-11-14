@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.3.5"
+PLUGIN_VERSION = "9.3.6"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -6379,8 +6379,8 @@ class HumanCorePlugin(Star):
         tail = ""
         if found_kind in ("outfits", "jewelry") and getattr(self, "wardrobe", None) is not None:
             try:
-                self.wardrobe.add(name, scenes=["casual", "out"], note="市场买",
-                                  slot=str(row.get("slot") or ""))
+                await self.wardrobe.add(name, scenes=["casual", "out"], note="市场买",
+                                        slot=str(row.get("slot") or ""))
                 tail = "，已经放进衣柜"
             except Exception as exc:
                 logger.debug("[amo] 买完放衣柜失败: %s" % exc)
@@ -6483,7 +6483,7 @@ class HumanCorePlugin(Star):
             try:
                 await self._ensure_ready()
                 try:
-                    self._reseed_wardrobe_from_market()
+                    await self._reseed_wardrobe_from_market()
                 except Exception as exc:
                     logger.debug("[amo] 衣柜重建失败: %s" % exc)
                 if not self._data_synced and self._data_connected():
@@ -7807,7 +7807,7 @@ class HumanCorePlugin(Star):
             pass
         return None
 
-    def _reseed_wardrobe_from_market(self) -> None:
+    async def _reseed_wardrobe_from_market(self) -> None:
         """衣柜按市场目录重建（分件、100+）；只在版本标记不对时做一次，旧衣服全清。"""
         market = self._market_plugin()
         if market is None or self.wardrobe is None:
@@ -7822,7 +7822,7 @@ class HumanCorePlugin(Star):
         if not items:
             return
         try:
-            self.wardrobe.replace_all(items)
+            await self.wardrobe.replace_all(items)
         except Exception as exc:
             logger.warning("[amo] 衣柜重建失败: %s" % exc)
             return
@@ -9134,6 +9134,11 @@ class HumanCorePlugin(Star):
         if not self._data_found_logged:
             self._data_found_logged = True
             logger.info("[amo] 已连接数据插件 Astr_Amo_data，开始同步")
+        if self.wardrobe is not None:
+            try:
+                await self.wardrobe.refresh()
+            except Exception as exc:
+                logger.debug("[amo] 衣柜同步失败: %s" % exc)
         bot_id = self._data_bot_id()
         marker = "data_plugin_migrated_" + bot_id
         migrated = bool(self.db.kv_get(marker, False))
@@ -17614,6 +17619,10 @@ class HumanCorePlugin(Star):
         await self._ensure_ready()
         if self.wardrobe is None:
             return {"code": 1, "msg": "服装库不可用"}
+        try:
+            await self.wardrobe.refresh()
+        except Exception as exc:
+            logger.debug("[amo] 衣柜同步失败: %s" % exc)
         data = self.wardrobe.panel_data()
         current = ""
         try:
@@ -17638,10 +17647,10 @@ class HumanCorePlugin(Star):
         note = str(payload.get("note") or "").strip()
         try:
             if item_id:
-                item = self.wardrobe.update(item_id, name=name, scenes=scenes,
-                                            gender=gender, note=note)
+                item = await self.wardrobe.update(item_id, name=name, scenes=scenes,
+                                                  gender=gender, note=note)
             else:
-                item = self.wardrobe.add(name, scenes=scenes, gender=gender, note=note)
+                item = await self.wardrobe.add(name, scenes=scenes, gender=gender, note=note)
         except Exception as exc:
             return {"code": 1, "msg": "保存失败：%s" % exc}
         if not item:
@@ -17657,7 +17666,7 @@ class HumanCorePlugin(Star):
         item_id = str(payload.get("id") or "").strip()
         if not item_id:
             return {"code": 1, "msg": "缺少 id"}
-        ok = self.wardrobe.delete(item_id)
+        ok = await self.wardrobe.delete(item_id)
         return {"code": 0 if ok else 1, "msg": "已删除" if ok else "没找到这件"}
 
     async def api_wardrobe_wear(self):

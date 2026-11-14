@@ -3,8 +3,12 @@
 
 日程配装不再随机，而是从这份库里按场景挑；库是空的才回落到内置兜底。
 
-数据存在插件数据目录的 ``wardrobe.json``，
-每条：id / name / scenes / gender / enabled / note / created。
+**存储归记忆库**（Astr_Amo_data 的 ``wardrobe`` 表，3.0.9 起）：
+- 启动时 ``refresh()`` 拉一份到内存快照，读（挑衣服/面板）都走快照，不阻塞；
+- 写（买衣服/改/删）是异步落库，记忆库不在时退回本地 ``wardrobe.json``，别让她没衣服穿；
+- 搭配规则（场景、JK 硬配对、按天挑）**留在终端**——终端是唯一大脑，记忆库只管存。
+
+每条：id / name / scenes / gender / slot / enabled / note / created。
 """
 
 from __future__ import annotations
@@ -19,8 +23,6 @@ import zlib
 
 # 场景标签：和 outfit_engine 的 scene 一一对应
 SCENES = ("work", "home", "casual", "out", "formal", "sport", "sleep", "beach")
-
-#: 分件槽位：上衣/裤子/裙子/JK 格裙/JK 衬衣/袜子/鞋/配饰
 
 #: 固定搭配：某些槽位只能和特定的槽位一起出现，别的都不能配
 SLOT_EXCLUSIVE = {
@@ -134,7 +136,8 @@ class Wardrobe:
     def __init__(self, plugin):
         self.plugin = plugin
         self._lock = threading.RLock()
-        self._data = None
+        self._items = []
+        self._loaded = False
         base = ""
         try:
             base = os.path.dirname(str(getattr(plugin.db, "path", "") or ""))
@@ -142,64 +145,122 @@ class Wardrobe:
             base = ""
         if not base:
             base = str(getattr(plugin, "plugin_dir", "") or ".")
+        # 旧存储：只在「记忆库不可用」和「第一次迁移」时用到
         self.path = os.path.join(base, "wardrobe.json")
 
-    # ---------- 存储 ----------
+    def _debug(self, text):
+        try:
+            self.plugin.logger.debug("[amo] %s" % text)
+        except Exception:
+            pass
 
-    def _load(self):
-        if self._data is not None:
-            return self._data
-        data = {"items": []}
+    # ---------- 存储：记忆库优先，旧 JSON 只当兜底 ----------
+
+    @staticmethod
+    def _normalize(item):
+        """把一条记录洗成内部结构；名字不合法就返回 None。"""
+        if not isinstance(item, dict):
+            return None
+        name = clean_name(item.get("name"))
+        if not name:
+            return None
+        scenes = [scene for scene in (item.get("scenes") or []) if scene in SCENES]
+        return {
+            "id": str(item.get("id") or ("w" + uuid.uuid4().hex[:10])),
+            "name": name,
+            "slot": str(item.get("slot") or ""),
+            "scenes": scenes or guess_scenes(name),
+            "gender": str(item.get("gender") or "通用"),
+            "enabled": bool(item.get("enabled", True)),
+            "note": str(item.get("note") or "")[:120],
+            "created": float(item.get("created") or time.time()),
+        }
+
+    def _load_legacy(self):
+        """读旧的 wardrobe.json（迁移来源 / 记忆库不在时的兜底）。"""
         try:
             with open(self.path, "r", encoding="utf-8") as handle:
                 raw = json.load(handle)
-            if isinstance(raw, dict) and isinstance(raw.get("items"), list):
-                data = raw
-            elif isinstance(raw, list):
-                data = {"items": raw}
         except Exception:
-            data = {"items": []}
+            return []
+        rows = raw.get("items") if isinstance(raw, dict) else raw
         items = []
-        for item in data.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            name = clean_name(item.get("name"))
-            if not name:
-                continue
-            scenes = [scene for scene in (item.get("scenes") or []) if scene in SCENES]
-            items.append({
-                "id": str(item.get("id") or ("w" + uuid.uuid4().hex[:10])),
-                "name": name,
-                "slot": str(item.get("slot") or ""),
-                "scenes": scenes or guess_scenes(name),
-                "gender": str(item.get("gender") or "通用"),
-                "enabled": bool(item.get("enabled", True)),
-                "note": str(item.get("note") or "")[:120],
-                "created": float(item.get("created") or time.time()),
-            })
-        data["items"] = items[-MAX_ITEMS:]
-        self._data = data
-        return data
+        for row in rows or []:
+            item = self._normalize(row)
+            if item:
+                items.append(item)
+        return items[-MAX_ITEMS:]
 
-    def _save(self):
-        data = self._data or {"items": []}
+    def _save_legacy(self):
+        """记忆库写不进去时才用：至少别把这次改动丢了。"""
         try:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, ensure_ascii=False, indent=2)
+                json.dump({"items": list(self._items)}, handle, ensure_ascii=False, indent=2)
             os.replace(tmp, self.path)
         except Exception as exc:
-            try:
-                self.plugin.logger.debug("[amo] 服装库落盘失败: %s" % exc)
-            except Exception:
-                pass
+            self._debug("服装库落盘失败: %s" % exc)
 
-    # ---------- 读写 ----------
+    async def _data(self, name, *args):
+        """调记忆库；没装/超时返回 None（调用方据此回退）。"""
+        func = getattr(self.plugin, "_data_call", None)
+        if not callable(func):
+            return None
+        try:
+            return await func(name, *args)
+        except Exception as exc:
+            self._debug("记忆库 %s 失败: %s" % (name, exc))
+            return None
+
+    async def refresh(self, force=False):
+        """从记忆库拉一份到内存快照；记忆库是空的就先把旧 JSON 灌过去。"""
+        if self._loaded and not force:
+            return self._items
+        rows = await self._data("wardrobe_rows", "", False)
+        if isinstance(rows, list):
+            if rows:
+                items = [item for item in (self._normalize(row) for row in rows) if item]
+                with self._lock:
+                    self._items = items
+            else:
+                legacy = self._load_legacy()
+                with self._lock:
+                    self._items = legacy
+                if legacy:
+                    await self._data("wardrobe_replace_all", "", [dict(item) for item in legacy])
+                    self._debug("旧 wardrobe.json 已迁进记忆库：%d 件" % len(legacy))
+        else:
+            # 记忆库不可用：退回旧 JSON，至少今天还能给她配衣服
+            legacy = self._load_legacy()
+            with self._lock:
+                self._items = legacy or self._items
+            self._debug("记忆库不可用，衣柜暂用本地 JSON（%d 件）" % len(self._items))
+        self._loaded = True
+        return self._items
+
+    async def _persist(self, item):
+        ok = await self._data("wardrobe_save", "", dict(item))
+        if not ok:
+            self._save_legacy()
+
+    async def _persist_all(self):
+        rows = [dict(item) for item in self._items]
+        ok = await self._data("wardrobe_replace_all", "", rows)
+        if not ok:
+            self._save_legacy()
+
+    def _ensure(self):
+        """还没跟记忆库同步过时，先用旧 JSON 顶着（同步读不能 await）。"""
+        if not self._loaded and not self._items:
+            self._items = self._load_legacy()
+        return self._items
+
+    # ---------- 读（同步，走内存快照） ----------
 
     def items(self, only_enabled=False):
         with self._lock:
-            items = [dict(item) for item in self._load()["items"]]
+            items = [dict(item) for item in self._ensure()]
         if only_enabled:
             items = [item for item in items if item.get("enabled", True)]
         return items
@@ -216,41 +277,33 @@ class Wardrobe:
                 return item
         return {}
 
-    def replace_all(self, items):
+    # ---------- 写（异步，落记忆库） ----------
+
+    async def replace_all(self, items):
         """整库替换（按市场目录重建衣柜时用）；返回替换后的条数。"""
         rows = []
         for row in items or []:
-            if not isinstance(row, dict):
+            item = self._normalize(row)
+            if not item:
                 continue
-            name = clean_name(row.get("name"))
-            if not name:
-                continue
-            item = {
-                "id": str(row.get("id") or uuid.uuid4().hex[:10]),
-                "name": name,
-                "slot": str(row.get("slot") or ""),
-                "scenes": list(row.get("scenes") or guess_scenes(name)),
-                "gender": str(row.get("gender") or "女"),
-                "enabled": bool(row.get("enabled", True)),
-                "note": str(row.get("note") or ""),
-                "created": float(row.get("created") or time.time()),
-            }
+            if row.get("gender") is None:
+                item["gender"] = "女"
             rows.append(item)
+        rows = rows[:MAX_ITEMS]
         with self._lock:
-            data = self._load()
-            data["items"] = rows[:MAX_ITEMS]
-            self._data = data
-            self._save()
-        return len(rows[:MAX_ITEMS])
+            self._items = rows
+            self._loaded = True
+        await self._persist_all()
+        return len(rows)
 
-    def add(self, name, scenes=None, gender="通用", note="", slot=""):
+    async def add(self, name, scenes=None, gender="通用", note="", slot=""):
         name = clean_name(name)
         if len(name) < MIN_NAME:
             return {}
         scenes = [scene for scene in (scenes or []) if scene in SCENES]
         with self._lock:
-            data = self._load()
-            for item in data["items"]:
+            rows = self._ensure()
+            for item in rows:
                 if item["name"] == name:
                     # 同名直接更新，避免库被同名刷爆
                     if scenes:
@@ -260,27 +313,29 @@ class Wardrobe:
                     if note:
                         item["note"] = str(note)[:120]
                     item["enabled"] = True
-                    self._save()
-                    return dict(item)
-            item = {
-                "id": "w" + uuid.uuid4().hex[:10],
-                "name": name,
-                "slot": str(slot or ""),
-                "scenes": scenes or guess_scenes(name),
-                "gender": gender if gender in ("女", "男", "通用") else "通用",
-                "enabled": True,
-                "note": str(note or "")[:120],
-                "created": time.time(),
-            }
-            data["items"].append(item)
-            data["items"] = data["items"][-MAX_ITEMS:]
-            self._save()
-            return dict(item)
+                    fresh = dict(item)
+                    break
+            else:
+                item = {
+                    "id": "w" + uuid.uuid4().hex[:10],
+                    "name": name,
+                    "slot": str(slot or ""),
+                    "scenes": scenes or guess_scenes(name),
+                    "gender": gender if gender in ("女", "男", "通用") else "通用",
+                    "enabled": True,
+                    "note": str(note or "")[:120],
+                    "created": time.time(),
+                }
+                rows.append(item)
+                del rows[:-MAX_ITEMS]
+                fresh = dict(item)
+        await self._persist(fresh)
+        return fresh
 
-    def update(self, item_id, **fields):
+    async def update(self, item_id, **fields):
         with self._lock:
-            data = self._load()
-            for item in data["items"]:
+            fresh = {}
+            for item in self._ensure():
                 if item["id"] != str(item_id):
                     continue
                 if "name" in fields:
@@ -297,26 +352,35 @@ class Wardrobe:
                     item["enabled"] = bool(fields["enabled"])
                 if "note" in fields:
                     item["note"] = str(fields["note"] or "")[:120]
-                self._save()
-                return dict(item)
-        return {}
+                fresh = dict(item)
+                break
+        if not fresh:
+            return {}
+        await self._persist(fresh)
+        return fresh
 
-    def delete(self, item_id):
+    async def delete(self, item_id):
         with self._lock:
-            data = self._load()
-            before = len(data["items"])
-            data["items"] = [item for item in data["items"] if item["id"] != str(item_id)]
-            if len(data["items"]) == before:
-                return False
-            self._save()
-            return True
+            rows = self._ensure()
+            before = len(rows)
+            rows[:] = [item for item in rows if item["id"] != str(item_id)]
+            removed = len(rows) != before
+        if not removed:
+            return False
+        ok = await self._data("wardrobe_delete", "", str(item_id))
+        if not ok:
+            self._save_legacy()
+        return True
 
-    def clear(self):
+    async def clear(self):
         with self._lock:
-            self._data = {"items": []}
-            self._save()
+            self._items = []
+            self._loaded = True
+        ok = await self._data("wardrobe_clear", "")
+        if not ok:
+            self._save_legacy()
 
-    # ---------- 挑选 ----------
+    # ---------- 挑选（同步，纯规则） ----------
 
     def pool(self, gender, scene):
         """这一场景能穿的衣服；性别不符的跳过（通用都算）。"""
@@ -362,6 +426,7 @@ class Wardrobe:
         items = self.items()
         return {
             "path": self.path,
+            "backend": "记忆库" if self._loaded else "本地 JSON（未同步）",
             "count": len([item for item in items if item.get("enabled", True)]),
             "items": items,
             "scenes": [{"key": key, "label": SCENE_LABELS[key]} for key in SCENES],
