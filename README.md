@@ -6,6 +6,13 @@
 
 > 使用手册见 [wiki/](wiki/)：安装、金融、医疗、记忆与遗忘、相片一致性、常见问题。
 
+## 9.3.5（清理死导入和死变量）
+
+- 删掉未使用导入：`sleep_cycle.SleepPhase`、`amo_enums.MoodKey`/`coerce`、`datetime as _dt`、`re`、`hashlib`、`event_filter`、`dataclasses.field`、`Star`。
+- 删掉四处只赋值、从不使用的局部变量（`end_min`、`activities`、`group_id`、`place`）。
+- 行为不变：795 个测试全绿。
+
+
 ## 9.3.4（还款要在聊天里看得见）
 
 - 还款回执写成 `[还款]金额` + 一句人话，主动还钱和自动还款都发，格式一致。

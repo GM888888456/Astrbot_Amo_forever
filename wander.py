@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 
 DEFAULT_CITY = "东莞"

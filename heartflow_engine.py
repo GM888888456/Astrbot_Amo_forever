@@ -15,10 +15,10 @@ import threading
 import asyncio
 from collections import deque
 from typing import Dict, Optional, List, Any, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from astrbot.api.star import Context, Star
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context
+from astrbot.api.event import AstrMessageEvent
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.message_components import Plain, At, Reply
 from astrbot.api.provider import LLMResponse

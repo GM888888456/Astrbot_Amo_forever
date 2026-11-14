@@ -1,5 +1,12 @@
 # Changelog
 
+## 9.3.5（清理死导入和死变量）
+
+- 删掉未使用导入：`sleep_cycle.SleepPhase`、`amo_enums.MoodKey`/`coerce`、`datetime as _dt`、`re`、`hashlib`、`event_filter`、`dataclasses.field`、`Star`。
+- 删掉四处只赋值、从不使用的局部变量（`end_min`、`activities`、`group_id`、`place`）。
+- 行为不变：795 个测试全绿。
+
+
 ## 9.3.4（还款要在聊天里看得见：[还款]金额）
 
 - 新增 `_repay_message(amount, remaining)`：第一行 `[还款]金额`（和 `[转账]500` 一个写法，

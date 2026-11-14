@@ -1127,7 +1127,6 @@ class ScheduleEngine:
     def _activity_for(self, item, ctx, hour, rng, prev):
         zone = str(item.get("zone") or "")
         category = str(item.get("category") or "")
-        place = str(item.get("place") or "")
         transit = str(item.get("transit") or "")
         spot = str(item.get("spot") or "")
         base = str(item.get("activity") or "")

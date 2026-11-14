@@ -81,7 +81,6 @@ try:
         WAKE_WORDS,
         SleepAnswer,
         SleepCycle,
-        SleepPhase,
         reason_for,
     )
 except ImportError:  # 直接按文件加载时
@@ -94,7 +93,6 @@ except ImportError:  # 直接按文件加载时
                 WAKE_WORDS,
                 SleepAnswer,
                 SleepCycle,
-                SleepPhase,
                 reason_for,
             )
         except ImportError:  # pragma: no cover
@@ -533,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.3.4"
+PLUGIN_VERSION = "9.3.5"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -663,9 +661,9 @@ OUTFIT_VERSION = "outfit-v5"  # 穿搭规则变了就改这里，旧日程会自
 DIARY_WARM_VERSION = "diary-v2"  # 小日记规则变了就改这里，会重新预生成
 NETWORK_RELATIONS = ("家人", "恋人", "朋友", "同事", "同学", "熟人", "陌生人", "仇人")
 try:
-    from .amo_enums import MOOD_KEYS, ActivityCategory, MoodKey, SceneZone, coerce, value_of
+    from .amo_enums import MOOD_KEYS, ActivityCategory, SceneZone, value_of
 except ImportError:  # 直接按文件加载时
-    from amo_enums import MOOD_KEYS, ActivityCategory, MoodKey, SceneZone, coerce, value_of
+    from amo_enums import MOOD_KEYS, ActivityCategory, SceneZone, value_of
 
 try:
     from .heartflow import Heartflow as HeartflowCore, HeartflowEvent as FeelEvent
@@ -3485,7 +3483,6 @@ class HumanState:
         result = []
         for hour in range(24):
             start_min = hour * 60
-            end_min = start_min + 60
             found = None
             for item in valid:
                 begin = parse_hhmm(item.get("start"))
@@ -3565,7 +3562,6 @@ class HumanState:
             block["children"] = children
             block["current"] = any(child["current"] for child in children)
             if children:
-                activities = [str(child.get("activity") or "") for child in children]
                 if all(item.get("category") == "sleep" for item in children):
                     block["activity"] = "睡觉"
                 elif any(item.get("category") in ("play", "social") for item in children):
@@ -11475,7 +11471,6 @@ class HumanCorePlugin(Star):
             return
 
         umo = event.unified_msg_origin
-        group_id = event.get_group_id()
         private = event.is_private_chat()
         if private:
             self._clear_proactive_pending(uid)
@@ -13230,8 +13225,6 @@ class HumanCorePlugin(Star):
             place(string): 地点，留空就沿用原来的。
         """
         try:
-            import datetime as _dt
-
             key = _clock_now().date().isoformat()
             items = self.state.schedule.get(key) or self.db.get_schedule(key) or []
             if not items:

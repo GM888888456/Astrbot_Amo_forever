@@ -6,7 +6,6 @@ import re
 import unicodedata
 from typing import List, Optional, Tuple
 
-from astrbot.api.event import filter as event_filter
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api import logger
 from astrbot.core.message.message_event_result import MessageChain

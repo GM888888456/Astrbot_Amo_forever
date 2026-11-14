@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import datetime
-import re
 
 # (触发词, 新的活动, 分类, 需要的时间推断方式)
 _RULES = [
