@@ -1459,12 +1459,6 @@
     "default": "",
     "hint": "逗号分隔；留空则管理员和「相恋」关系可以。"
   },
-  "draw_private_only": {
-    "type": "bool",
-    "description": "【照片】只在私聊画（已废弃，群聊策略见 draw_group_mode）",
-    "default": true,
-    "hint": "老开关，保留只为兼容旧配置；群聊能不能画现在只看 draw_group_mode。"
-  },
   "draw_group_mode": {
     "type": "string",
     "description": "【照片】群聊放行策略",
@@ -1587,5 +1581,45 @@
     "description": "失败回执重试窗口（秒）",
     "default": 60,
     "hint": "失败不长期占用幂等，过了这个时间同一个 event_id 可以重试。"
+  },
+  "baseline_private_money": {
+    "type": "float",
+    "description": "私聊花钱权重",
+    "default": 1.0,
+    "hint": "心流分 × 这个权重；1.0 = 不打折。"
+  },
+  "baseline_group_money": {
+    "type": "float",
+    "description": "群聊花钱权重",
+    "default": 0.3,
+    "hint": "群聊里花钱的分量：0.3 × 心流分，通常就过不了 0.5 的门槛。"
+  },
+  "baseline_group_complain": {
+    "type": "float",
+    "description": "群聊诉苦权重",
+    "default": 0.4,
+    "hint": "群聊里诉苦类行为的权重。"
+  },
+  "approve_threshold": {
+    "type": "float",
+    "description": "审批通过线",
+    "default": 0.5,
+    "hint": "加权后的分 ≥ 这个值才放行。"
+  },
+  "defer_group_money": {
+    "type": "bool",
+    "description": "群聊资金类暂缓",
+    "default": true,
+    "hint": "打开后群聊买东西/治疗一律 defer（不扣），私聊不受影响。"
+  },
+  "label_stale_seconds": {
+    "type": "int",
+    "description": "标签降权时间（秒）",
+    "default": 900
+  },
+  "label_drop_seconds": {
+    "type": "int",
+    "description": "标签丢弃时间（秒）",
+    "default": 1800
   }
 }
