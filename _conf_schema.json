@@ -1557,5 +1557,11 @@
     "description": "守护超时（毫秒）",
     "default": 2000,
     "hint": "超过这个时间直接发原文，不阻塞对话。"
+  },
+  "guard_deliver_enable": {
+    "type": "bool",
+    "description": "守护接管发送",
+    "default": false,
+    "hint": "打开后：终端只决定说什么，润色、分段、逐条发送都交给 Astrbot_Amo_Guard；守护异常时自动退回本地分段引擎。"
   }
 }

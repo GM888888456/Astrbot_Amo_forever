@@ -1,5 +1,13 @@
 # Changelog
 
+## 9.5.6（守护接管发送）
+
+- `guard_bridge` 新增 `deliver_reply()`：终端只给 `umo + 文本 + 场景 + 引用`，守护负责润色、分段、逐条发。
+- `on_decorating_result` 在 `_trim_reply` 之后先问守护；守护发成了就 `result.chain=[]` 并 `return`，不再走本地分段。
+- 本地 `segment_engine` 新增 `after_external_send()`：外部发送后只补记账（会话历史 / messages 表 / 心流通知 / last_reply_at），不再重发。
+- 新配置 `guard_deliver_enable`（默认 false）；守护缺席、异常、一条没发出去 → 自动回退本地分段引擎。
+- 守护发成一条以上时，`guard_text_enable` 那条单次润色链路自动让位，避免加工两遍。
+- 测试：新增 7 条（发送桥/记账），全量 881 条通过。
 ## 9.5.5（阶段 5：接守护后处理）
 
 - 新增 `guard_bridge.py`：把回复交给 `Astrbot_Amo_Guard` 做最后一道工序（润色/去重/表情裁剪/空内容兜底）。

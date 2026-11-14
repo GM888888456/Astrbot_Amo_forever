@@ -33,7 +33,10 @@ def _instance(meta):
         return None
     for attr in ("star_cls", "instance", "star", "plugin"):
         value = getattr(meta, attr, None)
-        if value is not None and callable(getattr(value, "process_task", None)):
+        if value is None:
+            continue
+        if (callable(getattr(value, "process_task", None))
+                or callable(getattr(value, "deliver", None))):
             return value
     return None
 
@@ -104,3 +107,37 @@ async def process_reply_text(plugin, text, scene="private", *,
         return [text]
     pieces = [str(item) for item in (result.get("output_list") or []) if str(item).strip()]
     return pieces or [text]
+
+async def deliver_reply(plugin, text, scene="private", umo="", *, quote_id=None,
+                        group=False, task_type="format",
+                        timeout_ms=DEFAULT_TIMEOUT_MS, guard=None):
+    """把「要说什么」交给守护，由它分段并发出去。
+
+    返回守护的结果 dict；守护没装 / 没有 deliver 能力 / 调用异常 → 返回 None，
+    终端据此退回老的分段引擎（宁可它自己发，也不能把话吞了）。
+    """
+    text = str(text or "")
+    umo = str(umo or "")
+    if not text.strip() or not umo:
+        return None
+    instance = guard if guard is not None else find_guard(getattr(plugin, "context", None))
+    if instance is None:
+        return None
+    deliver = getattr(instance, "deliver", None)
+    if not callable(deliver):
+        return None
+    task = {
+        "task_id": "reply-%d" % int(time.time() * 1000),
+        "task_type": task_type or "format",
+        "scene": "group" if str(scene or "").lower() == "group" else "private",
+        "umo": umo,
+        "quote_id": quote_id,
+        "group": bool(group),
+        "raw_content": text,
+        "timeout_ms": max(0, int(timeout_ms)),
+    }
+    try:
+        return await asyncio.wait_for(
+            deliver(task), timeout=max(10.0, int(timeout_ms) / 1000.0 + 15.0))
+    except Exception:
+        return None

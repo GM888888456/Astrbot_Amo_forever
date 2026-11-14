@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.5.5"
+PLUGIN_VERSION = "9.5.6"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -1138,6 +1138,14 @@ except Exception:
         from guard_bridge import process_reply_text as _guard_process_reply
     except Exception:  # pragma: no cover
         _guard_process_reply = None
+
+try:
+    from .guard_bridge import deliver_reply as _guard_deliver_reply
+except Exception:
+    try:
+        from guard_bridge import deliver_reply as _guard_deliver_reply
+    except Exception:  # pragma: no cover
+        _guard_deliver_reply = None
 
 
 def clean_reply(text, limit=300):
@@ -13726,7 +13734,9 @@ class HumanCorePlugin(Star):
                 except Exception:
                     pass
             # 守护做最后一道工序（润色/去重/表情裁剪/兜底）；缺席、超时、报错都走原文
-            if _guard_process_reply is not None and self.cfg_bool("guard_text_enable", False):
+            if (_guard_process_reply is not None
+                    and self.cfg_bool("guard_text_enable", False)
+                    and not self.cfg_bool("guard_deliver_enable", False)):
                 try:
                     _pieces = await _guard_process_reply(
                         self,
@@ -13742,6 +13752,32 @@ class HumanCorePlugin(Star):
                     logger.debug("[amo] 守护后处理失败，用原文: %s" % _guard_exc)
             text = self._trim_reply(text)
             result.chain = [Comp.Plain(text)]
+
+            # 守护接管「说出去」：它润色分段并逐条发；发成了这里只补记账。
+            # 守护没装/异常/一条没发出去 → 继续走下面的本地分段引擎兜底。
+            if _guard_deliver_reply is not None and self.cfg_bool("guard_deliver_enable", False):
+                _delivered = await _guard_deliver_reply(
+                    self,
+                    text,
+                    "group" if group else "private",
+                    event.unified_msg_origin,
+                    quote_id=quote_id if quote_enabled else None,
+                    group=group,
+                    timeout_ms=self.cfg_int("guard_text_timeout_ms", 2000),
+                )
+                if _delivered and _delivered.get("sent"):
+                    result.chain = []
+                    if self.segment_engine is not None:
+                        try:
+                            await self.segment_engine.after_external_send(
+                                event, _delivered.get("text") or text)
+                        except Exception as exc:
+                            logger.debug("[amo] 守护发送后记账失败: %s" % exc)
+                    logger.info("[amo] 守护已发送 %d 条 -> %s: %s"
+                                % (_delivered.get("sent") or 0,
+                                   event.unified_msg_origin,
+                                   (_delivered.get("text") or text)[:300]))
+                    return
 
             # 群聊/私聊的最终发送只交给完整本地分段引擎。
             if self.segment_engine is None or not self.cfg_bool("seg_enable", True):

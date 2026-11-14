@@ -173,6 +173,36 @@ class SegmentEngine:
         except Exception as exc:
             logger.debug(f"[分段] 记录回复失败: {exc}")
 
+    async def after_external_send(self, event: AstrMessageEvent, text: str) -> None:
+        """别的模块（守护）已经把话发出去时，这里只补记账，不再发一遍。
+
+        对应原来分段引擎自己发送后做的四件事：关打字状态、写会话历史、
+        写自己的消息表、通知心流「这一轮回过了」。
+        """
+        text = str(text or "")
+        if not text.strip():
+            return
+        try:
+            await self._set_typing(event, False)
+        except Exception:
+            pass
+        try:
+            await self._save_to_conversation_history(event, text)
+        except Exception:
+            pass
+        try:
+            self._remember_bot_text(event, text)
+        except Exception:
+            pass
+        try:
+            self._notify_heartflow(event, text)
+        except Exception:
+            pass
+        try:
+            self.plugin._last_reply_at[event.unified_msg_origin] = time.time()
+        except Exception:
+            pass
+
     async def handle_segment_reply(self, event: AstrMessageEvent, quote_id=None, group=False, force=False):
         """拦截 LLM 回复，执行分段并逐条发送。返回 True 表示已接管发送。
 
