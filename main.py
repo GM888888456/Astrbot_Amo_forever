@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.3.7"
+PLUGIN_VERSION = "9.3.8"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -10742,6 +10742,29 @@ class HumanCorePlugin(Star):
         return "换了新%s：%s（¥%.0f，余额 ¥%.0f）。" % (
             name, wish.get("model"), price, float(result.get("balance") or 0))
 
+    async def _eat_with_charge(self, amount: float, dish: str = "饭") -> None:
+        """日程里吃饭也要「真吃」：以前只扣钱不涨饱食度，于是她天天花钱、天天饿。"""
+        plugin = self._data_plugin()
+        eat = getattr(plugin, "eat", None) if plugin is not None else None
+        if not callable(eat):
+            return
+        try:
+            await asyncio.to_thread(eat, float(amount), "", str(dish or "饭"))
+        except Exception as exc:
+            logger.debug("[amo] 记吃饭失败: %s" % exc)
+            return
+        try:
+            self.db.kv_set("last_meal", {"ts": now_ts(), "dish": str(dish or "饭"),
+                                         "method": "schedule"})
+        except Exception:
+            pass
+        try:
+            self.feel(FeelEvent.MEAL)
+        except Exception:
+            pass
+        self._sync_hunger_from_vitals()
+        logger.info("[amo] 日程吃饭：%s（饱食度 +%.0f）" % (dish, float(amount)))
+
     def _bill_meals(self) -> None:
         """日程里正在吃饭却一直没扣钱：按地点补扣一次，同一天同一格只扣一次。"""
         if getattr(self, "state", None) is None:
@@ -10774,6 +10797,9 @@ class HumanCorePlugin(Star):
         else:
             cost, payee, reason = 58.0, (place or "餐馆"), "吃饭"
 
+        satiety = 38 if ("做饭" in activity or "下厨" in activity) else (
+            34 if ("外卖" in activity or "家" in place) else 42)
+
         async def run():
             result = await self.charge(cost, reason=reason, payee=payee,
                                        request_id=rid, source="meal")
@@ -10782,6 +10808,7 @@ class HumanCorePlugin(Star):
                     self.db.kv_set("meal_billed:" + rid, True)
                 except Exception:
                     pass
+                await self._eat_with_charge(satiety, activity or reason)
 
         try:
             self._spawn(run())
@@ -13685,6 +13712,9 @@ class HumanCorePlugin(Star):
             self._bill_meals()
         except Exception as exc:
             logger.debug("[amo] 吃饭补扣失败: %s" % exc)
+        if now_ts() - to_float(getattr(self, "_last_auto_meal_check", 0), 0) > 600:
+            self._last_auto_meal_check = now_ts()
+            self._spawn(self._maybe_auto_meal())
         try:
             self._device_wish_tick()
         except Exception as exc:
