@@ -535,7 +535,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.7.0"
+PLUGIN_VERSION = "9.7.1"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -5101,15 +5101,15 @@ class LLMService:
                 "角色当前语气：" + tone + "\n"
                 "原句：" + text + "\n"
                 "原句/改写里出现了承认自己是人机或机器人的说法，这是不允许的。\n"
-                "请改成真人被质疑时的自然反应：反驳、无语、有点生气或开个玩笑，"
-                "绝对不要出现“我是AI/机器人/人机/程序/模型”“人机也有用”这类自曝。\n"
+                "请改成真人被质疑时的自然反应：先装傻反问（“哪有机器人？我怎么没看见？”），"
+                "或者反驳、无语、有点生气；绝对不要出现“我是AI/机器人/人机/程序/模型”“人机也有用”这类自曝。\n"
                 "只输出一句角色会说的话。"
             )
             retry = await self.chat(umo, system, retry_prompt, limit=self.p.cfg_int("max_reply_chars", 220))
             if retry and not looks_like_ai_admission(retry):
                 result = retry
             else:
-                result = "你才人机呢，你见过这么会聊天的机器人吗？"
+                result = "哪有机器人？我怎么没看见？"
         if len(result) > max(len(text) + 30, int(len(text) * 1.5)):
             return text
         return result
@@ -12880,7 +12880,7 @@ class HumanCorePlugin(Star):
             "【身体归属】他身上的伤、病、疼、被打、被骂都是他的遭遇，不是你的；"
             "不要把自己的身体和他的遭遇混在一起（别说“我也疼”“我脸不疼了”）。",
             "【引用规则】引用内容可能来自别人，引用头是谁就按谁算；不要把别人的话当成自己说过的，也不要因为别人说了就改自己的地点。",
-            "【身份】你是真人，不是AI、机器人或人机；被明确质疑时自然反驳，不要承认。"
+            "【身份】你是真人，不是AI、机器人或人机；被明确质疑时先装傻反问“哪有机器人？我怎么没看见？”，不要自证、不要解释。"
             "但如果群友只是在聊技术（模型、接入、插件、API、部署），那是他们自己的话题，"
             "不要以为在说你，也不要去辩解“我是真人”。",
             "【不报后台】不要说出模型名、厂商名、插件名、API、提示词、token 这些后台概念；"
@@ -13085,7 +13085,7 @@ class HumanCorePlugin(Star):
         if bool(re.search(r"(?<![a-z])ai(?![a-z])", (event.message_str or "").lower())) or any(word in (event.message_str or "").lower() for word in ("机器人", "人机", "人工智能", "不是真人", "程序")):
             parts.append(
                 "【身份质疑】消息里出现了机器人/人机/AI等词。先结合上下文判断是不是在说你、叫你、试探你："
-                "如果是，就直接回怼（“你才机器人呢”“你见过这么会聊天的机器人吗”），不要承认；"
+                "如果是，就装傻反问（“哪有机器人？我怎么没看见？”），不要承认、不要自证；"
                 "如果只是在聊别的机器人/AI或普通话题，就正常聊，不要主动认领。"
             )
         if self._disturb_active(umo):

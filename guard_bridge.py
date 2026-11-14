@@ -136,7 +136,16 @@ async def deliver_reply(plugin, text, scene="private", umo="", *, quote_id=None,
         "timeout_ms": max(0, int(timeout_ms)),
     }
     try:
+        task["typing"] = {
+            "enable": bool(plugin.cfg_bool("typing_simulate", True)),
+            "base_ms": int(plugin.cfg_int("typing_base_ms", 700)),
+            "per_char_ms": int(plugin.cfg_int("typing_per_char_ms", 400)),
+            "max_ms": int(plugin.cfg_int("typing_max_ms", 20000)),
+        }
+    except Exception:
+        task["typing"] = {}
+    try:
         return await asyncio.wait_for(
-            deliver(task), timeout=max(10.0, int(timeout_ms) / 1000.0 + 15.0))
+            deliver(task), timeout=max(45.0, int(timeout_ms) / 1000.0 + 40.0))
     except Exception:
         return None
