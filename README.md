@@ -6,6 +6,12 @@
 
 > 使用手册见 [wiki/](wiki/)：安装、金融、医疗、记忆与遗忘、相片一致性、常见问题。
 
+## 9.5.3（拆分第一步：正文清洗抽成 text_clean.py）
+
+- `strip_pseudo_tags` 和它那 6 条正则（框架标签、`<thought>`、`<｜DSML｜>`、代码围栏）从 19k 行的 main.py 搬到独立模块 `text_clean.py`。
+- 抽查：`_sanitize_schedule` 之前以为是重复，其实在 `HumanState` 和 `HumanCorePlugin` 两个不同的类里，各管各的，**不是 bug**，不用合并。
+- 820 条测试全绿。
+
 ## 9.5.2（日记改存记忆库，终端目录的 txt 只当回退）
 
 - 日记的读/写/树/自动生成全部先问记忆库（`diary_put/get/list`），记忆库不在才落本地 txt。
