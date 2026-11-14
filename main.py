@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.5.0"
+PLUGIN_VERSION = "9.5.1"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -10725,6 +10725,51 @@ class HumanCorePlugin(Star):
         except Exception:
             pass
         logger.info("[amo] 想换设备：%s" % text)
+
+    @filter.llm_tool(name="amo_buy_asset")
+    async def amo_buy_asset(self, event, asset: str = "house", full: bool = False) -> str:
+        """买房或买车（她自己的钱走金融账本；不全款就三成首付、剩下走月供）。
+
+        Args:
+            asset(string): house 房子 / car 车。
+            full(boolean): true=全款，false=首付（默认）。
+        """
+        plugin = self._finance()
+        buyer = getattr(plugin, "buy_asset", None) if plugin is not None else None
+        if not callable(buyer):
+            return "我现在买不了（金融插件没连上）。"
+        result = buyer(asset, bool(full)) or {}
+        name = "房子" if str(result.get("asset") or "").startswith("house") else "车"
+        if not result.get("ok"):
+            if result.get("reason") == "钱不够":
+                return "买不起：%s要 %s，首付 %s，我卡里只有 %s。" % (
+                    name, self._money_text(result.get("price") or 0),
+                    self._money_text(result.get("need") or 0),
+                    self._money_text(result.get("balance") or 0))
+            return "现在买不了%s：%s。" % (name, result.get("reason") or "不知道怎么了")
+        tail = "全款" if full else "首付 %s，月供 %s" % (
+            self._money_text(result.get("paid") or 0), self._money_text(result.get("monthly") or 0))
+        return "%s买好了（%s），卡里还剩 %s。" % (
+            name, tail, self._money_text(result.get("balance") or 0))
+
+    @filter.llm_tool(name="amo_sell_asset")
+    async def amo_sell_asset(self, event, asset: str = "house") -> str:
+        """卖房或卖车换现金（钱进卡里，月供一起清掉）。
+
+        Args:
+            asset(string): house 房子 / car 车。
+        """
+        plugin = self._finance()
+        seller = getattr(plugin, "sell_asset", None) if plugin is not None else None
+        if not callable(seller):
+            return "我现在卖不了（金融插件没连上）。"
+        result = seller(asset) or {}
+        name = "房子" if str(result.get("asset") or "").startswith("house") else "车"
+        if not result.get("ok"):
+            return "卖不了%s：%s。" % (name, result.get("reason") or "不知道怎么了")
+        return "%s卖了 %s，卡里现在 %s。" % (
+            name, self._money_text(result.get("price") or 0),
+            self._money_text(result.get("balance") or 0))
 
     @filter.llm_tool(name="amo_buy_device")
     async def amo_buy_device(self, event, kind: str = "phone") -> str:

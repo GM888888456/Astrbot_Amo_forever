@@ -211,6 +211,19 @@ class DecideTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertIn("面条", plan["prompt"])
 
+    def test_topic_photo_is_selfie_when_alone(self):
+        """话题补图：她一个人时，镜头是她自己举着的，不能画成别人拍。"""
+        engine, _ = engine_for()
+        plan = engine.decide(FakeEvent("晚上吃啥"), "面条吧")
+        self.assertIsNotNone(plan)
+        self.assertTrue(plan.get("selfie"))
+
+    def test_topic_photo_is_third_person_with_others(self):
+        engine, _ = engine_for()
+        plan = engine.decide(FakeEvent("晚上跟朋友吃啥"), "一桌子菜吧")
+        self.assertIsNotNone(plan)
+        self.assertFalse(plan.get("selfie"))
+
     def test_no_hit(self):
         engine, _ = engine_for()
         self.assertIsNone(engine.decide(FakeEvent("今天上班好累"), "抱抱"))

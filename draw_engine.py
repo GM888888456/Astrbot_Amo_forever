@@ -541,6 +541,14 @@ class DrawEngine:
         )
         if not explicit_hit and not topic_hit:
             return self._skip("没命中触发词")
+        if not selfie and topic_hit and not explicit_hit:
+            # 话题补图：她一个人待着的时候，镜头只可能是她自己举着的。
+            # 只有画面里明确有别人/别的东西时才按他拍（以前这里一律 selfie=False，
+            # 于是「手机随手拍」被生图插件当成「他拍」，自拍变成了别人举手机拍）。
+            others = ("别人", "朋友", "同事", "同学", "大家", "一起", "合影",
+                      "他", "她", "猫", "狗")
+            scene = text + " " + reply_text
+            selfie = not any(word in scene for word in others)
         if not reply_text:
             return self._skip("没有回复文本")
         if explicit_hit and any(word in reply_text for word in (
