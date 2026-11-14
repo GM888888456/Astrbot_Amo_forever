@@ -9,7 +9,9 @@ import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import astrbot_stub  # noqa: E402,F401
+import astrbot_stub  # noqa: E402
+
+astrbot_stub.install()
 
 import guard_bridge  # noqa: E402
 from segment_engine import SegmentEngine  # noqa: E402
