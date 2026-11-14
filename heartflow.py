@@ -235,8 +235,14 @@ class Heartflow:
 
     # ---------- 内驱动 ----------
 
-    def decay(self, minutes: float) -> dict:
-        """时间流逝：饿一点、累一点，其余慢慢回基线（每小时 8%）。"""
+    #: 自然变化速度（每分钟）。以前是 0.6 / 0.35，一小时就饿 36 点、掉 21 点精力：
+    #: 吃一顿才回 25 点，等于刚吃完一小时又饿，而且精力只会一路掉到 0，永远回不来。
+    HUNGER_PER_MINUTE = 0.25          # 约 6.7 小时从饱到饿
+    ENERGY_PER_MINUTE = 0.12          # 醒着 14 小时耗尽
+    SLEEP_ENERGY_PER_MINUTE = 0.8     # 睡着两小时回满
+
+    def decay(self, minutes: float, sleeping: bool = False) -> dict:
+        """时间流逝：饿一点；醒着掉精力、睡着回精力；其余慢慢回基线（每小时 8%）。"""
         try:
             span = max(0.0, float(minutes))
         except (TypeError, ValueError):
@@ -245,12 +251,30 @@ class Heartflow:
             return self.load()
         hours = span / 60.0
         values = self.load()
-        values[Physiology.HUNGER.value] = clamp(values[Physiology.HUNGER.value] + 0.6 * span)
-        values[Physiology.ENERGY.value] = clamp(values[Physiology.ENERGY.value] - 0.35 * span)
+        values[Physiology.HUNGER.value] = clamp(
+            values[Physiology.HUNGER.value] + self.HUNGER_PER_MINUTE * span)
+        rate = self.SLEEP_ENERGY_PER_MINUTE if sleeping else -self.ENERGY_PER_MINUTE
+        values[Physiology.ENERGY.value] = clamp(values[Physiology.ENERGY.value] + rate * span)
         drift = min(0.5, 0.08 * hours)
         for dim in tuple(Emotion) + tuple(Desire):
             name = dim.value
             values[name] = clamp(values[name] + (BASELINE - values[name]) * drift)
+        return self.save(values)
+
+    def set_physiology(self, hunger=None, energy=None) -> dict:
+        """外部（生存系统）校准生理值。
+
+        吃饭/喝水只会改记忆库的饱食度，心流这边要跟着对齐，否则面板和内心戏
+        还停在「饿 100」，她吃完也继续喊饿。
+        """
+        values = self.load()
+        try:
+            if hunger is not None:
+                values[Physiology.HUNGER.value] = clamp(float(hunger))
+            if energy is not None:
+                values[Physiology.ENERGY.value] = clamp(float(energy))
+        except (TypeError, ValueError):
+            return values
         return self.save(values)
 
     # ---------- Prompt ----------

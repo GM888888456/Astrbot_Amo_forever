@@ -77,6 +77,19 @@ class DecayTests(unittest.TestCase):
         self.assertLess(out[Emotion.JOY.value], hot)
         self.assertGreater(out[Emotion.JOY.value], BASELINE)
 
+    def test_sleeping_restores_energy(self):
+        """睡着时精力回涨，不然一夜下来还是 0，她会永远喊累。"""
+        hf = Heartflow(FakeDB())
+        hf.save({**hf.values(), Physiology.ENERGY.value: 10.0})
+        out = hf.decay(60, sleeping=True)
+        self.assertGreater(out[Physiology.ENERGY.value], 10.0)
+
+    def test_hunger_rate_is_human(self):
+        """一小时不该饿掉三分之一：以前 0.6/分钟，吃一顿只回 25 点，等于白吃。"""
+        hf = Heartflow(FakeDB())
+        out = hf.decay(60)
+        self.assertLess(out[Physiology.HUNGER.value], BASELINE + 20)
+
     def test_zero_minutes_is_noop(self):
         hf = Heartflow(FakeDB())
         before = hf.values()

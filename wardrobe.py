@@ -202,6 +202,13 @@ class Wardrobe:
         except Exception as exc:
             self._debug("服装库落盘失败: %s" % exc)
 
+    def _bot_id(self):
+        """衣柜和终端其它数据必须用同一个 bot_id，否则会写成两套孤岛。"""
+        try:
+            return str(self.plugin._data_bot_id() or "")
+        except Exception:
+            return ""
+
     async def _data(self, name, *args):
         """调记忆库；没装/超时返回 None（调用方据此回退）。"""
         func = getattr(self.plugin, "_data_call", None)
@@ -217,7 +224,7 @@ class Wardrobe:
         """从记忆库拉一份到内存快照；记忆库是空的就先把旧 JSON 灌过去。"""
         if self._loaded and not force:
             return self._items
-        rows = await self._data("wardrobe_rows", "", False)
+        rows = await self._data("wardrobe_rows", self._bot_id(), False)
         if isinstance(rows, list):
             if rows:
                 items = [item for item in (self._normalize(row) for row in rows) if item]
@@ -228,7 +235,7 @@ class Wardrobe:
                 with self._lock:
                     self._items = legacy
                 if legacy:
-                    await self._data("wardrobe_replace_all", "", [dict(item) for item in legacy])
+                    await self._data("wardrobe_replace_all", self._bot_id(), [dict(item) for item in legacy])
                     self._debug("旧 wardrobe.json 已迁进记忆库：%d 件" % len(legacy))
         else:
             # 记忆库不可用：退回旧 JSON，至少今天还能给她配衣服
@@ -240,13 +247,13 @@ class Wardrobe:
         return self._items
 
     async def _persist(self, item):
-        ok = await self._data("wardrobe_save", "", dict(item))
+        ok = await self._data("wardrobe_save", self._bot_id(), dict(item))
         if not ok:
             self._save_legacy()
 
     async def _persist_all(self):
         rows = [dict(item) for item in self._items]
-        ok = await self._data("wardrobe_replace_all", "", rows)
+        ok = await self._data("wardrobe_replace_all", self._bot_id(), rows)
         if not ok:
             self._save_legacy()
 
@@ -367,7 +374,7 @@ class Wardrobe:
             removed = len(rows) != before
         if not removed:
             return False
-        ok = await self._data("wardrobe_delete", "", str(item_id))
+        ok = await self._data("wardrobe_delete", self._bot_id(), str(item_id))
         if not ok:
             self._save_legacy()
         return True
@@ -376,7 +383,7 @@ class Wardrobe:
         with self._lock:
             self._items = []
             self._loaded = True
-        ok = await self._data("wardrobe_clear", "")
+        ok = await self._data("wardrobe_clear", self._bot_id())
         if not ok:
             self._save_legacy()
 

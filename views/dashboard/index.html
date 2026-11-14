@@ -426,7 +426,7 @@
       <section class="card status-shell">
         <div class="hero-top">
           <div>
-            <div class="label">七情（只读）</div>
+            <div class="label" id="radarLabel">七情（只读）</div>
             <div class="dominant" id="dominant">读取中…</div>
           </div>
           <div class="hero-score"><span id="moodScore">--</span><small>/100</small></div>
@@ -1618,19 +1618,29 @@
       }
     }
 
-    function renderHeartflow(hf) {
-      const values = hf || {};
-      radarValues = values;
+    /* 标题和分数必须跟着雷达图切：切到六欲还显示「喜 35」就是这里漏了 */
+    function renderHero() {
+      const desire = radarMode === "desire";
+      const labels = desire ? DESIRE_CN : EMOTION_CN;
+      const keys = Object.keys(labels);
+      const label = document.getElementById("radarLabel");
+      if (label) label.textContent = desire ? "六欲（只读）" : "七情（只读）";
       let total = 0, topName = "—", topValue = -1;
-      Object.keys(EMOTION_CN).forEach((key) => {
-        const value = Math.max(0, Math.min(100, Number(values[key] || 0)));
+      keys.forEach((key) => {
+        const value = Math.max(0, Math.min(100, Number(radarValues[key] || 0)));
         total += value;
-        if (value > topValue) { topValue = value; topName = EMOTION_CN[key]; }
+        if (value > topValue) { topValue = value; topName = labels[key]; }
       });
       const dominant = document.getElementById("dominant");
       if (dominant) dominant.textContent = topValue >= 0 ? topName : "—";
       const score = document.getElementById("moodScore");
-      if (score) score.textContent = String(Math.round(total / 7));
+      if (score) score.textContent = String(Math.round(total / keys.length));
+    }
+
+    function renderHeartflow(hf) {
+      const values = hf || {};
+      radarValues = values;
+      renderHero();
       const physio = document.getElementById("physioLine");
       if (physio) {
         physio.textContent = "生理：饿 " + Math.round(Number(values.hunger || 0)) +
@@ -1644,6 +1654,7 @@
       radarCanvas.addEventListener("dblclick", () => {
         radarMode = radarMode === "desire" ? "emotion" : "desire";
         drawRadarNow();
+        renderHero();
       });
       // 手机上双击不总触发，补一个短按两次的判定
       let lastTap = 0;
@@ -1652,6 +1663,7 @@
         if (now - lastTap < 320) {
           radarMode = radarMode === "desire" ? "emotion" : "desire";
           drawRadarNow();
+          renderHero();
           lastTap = 0;
         } else {
           lastTap = now;
