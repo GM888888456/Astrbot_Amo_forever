@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.5.6"
+PLUGIN_VERSION = "9.5.7"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -1138,6 +1138,14 @@ except Exception:
         from guard_bridge import process_reply_text as _guard_process_reply
     except Exception:  # pragma: no cover
         _guard_process_reply = None
+
+try:
+    from . import label_bus as _label_bus
+except Exception:
+    try:
+        import label_bus as _label_bus
+    except Exception:  # pragma: no cover
+        _label_bus = None
 
 try:
     from .guard_bridge import deliver_reply as _guard_deliver_reply
@@ -8929,7 +8937,11 @@ class HumanCorePlugin(Star):
         return "；".join(rows)
 
     def _vitals_hint(self, event) -> str:
-        """饿了/渴了/刚吃过什么，注入给模型。不满足条件时返回空串。"""
+        """饿了/渴了/刚吃过什么，注入给模型。不满足条件时返回空串。
+
+        本能模式（``instinct_mode``）下只给 ``[Body: ...]`` 事实标签，不再写长句，
+        见执行文档 5.2。兜底动作（极端饥饿自动吃、口渴提醒冷却）与模式无关，两边都跑。
+        """
         vitals = self._vitals()
         if not vitals or not vitals.get("enabled", True):
             return ""
@@ -8940,13 +8952,17 @@ class HumanCorePlugin(Star):
             return ""
         hungry_at = float(vitals.get("hungry_at") or 30)
         starving_at = float(vitals.get("starving_at") or 10)
+        if satiety < starving_at:
+            # 兜底喂食/生病判定：这是终端的事，跟标签模式无关
+            self._spawn(self._maybe_hunger_sick())
+            self._spawn(self._maybe_auto_meal())
+        if self.cfg_bool("instinct_mode", False):
+            return self._body_tag_block(satiety, hydration, hungry_at)
         texts = []
         if satiety < starving_at:
             texts.append(
                 "【状态：极度饥饿 %.0f/100】你很久没吃东西了，胃里发空、手有点抖，"
                 "注意力没法集中，说话也没力气。" % satiety)
-            self._spawn(self._maybe_hunger_sick())
-            self._spawn(self._maybe_auto_meal())
         elif satiety < hungry_at:
             texts.append("【状态：饥饿 %.0f/100】你有点饿了，注意力开始散。" % satiety)
         if hydration < hungry_at:
@@ -8977,6 +8993,39 @@ class HumanCorePlugin(Star):
             if menu:
                 texts.append("【现在能吃的（价格来自金融）】" + menu)
         return ("\n" + "\n".join(texts)) if texts else ""
+
+    def _body_tag_block(self, satiety: float, hydration: float, hungry_at: float) -> str:
+        """本能模式的身体事实：只有数值，没有台词，带 ts。"""
+        try:
+            last = self.db.kv_get("last_meal", {}) or {}
+        except Exception:
+            last = {}
+        last_meal = "None"
+        try:
+            age = now_ts() - float(last.get("ts") or 0)
+        except Exception:
+            age = 1e9
+        if last and age < 6 * 3600:
+            last_meal = "%s（%d分钟前）" % (
+                str(last.get("dish") or "吃了点东西"), max(1, int(age // 60)))
+        fields = {
+            "Hunger": round(100.0 - satiety, 1),
+            "Thirst": round(100.0 - hydration, 1),
+            "Satiety": round(satiety, 1),
+            "Hydration": round(hydration, 1),
+            "Last_Meal": last_meal,
+        }
+        if _label_bus is not None:
+            lines = [_label_bus.format_tag("Body", fields, ts=now_ts())]
+        else:  # 兜底：标签模块没加载也不能空着
+            lines = ["[Body: Hunger=%.1f, Thirst=%.1f, Satiety=%.1f, Hydration=%.1f]"
+                     % (fields["Hunger"], fields["Thirst"],
+                        fields["Satiety"], fields["Hydration"])]
+        if satiety < hungry_at:
+            menu = self._food_menu()
+            if menu:
+                lines.append("【现在能吃的（价格来自金融）】" + menu)
+        return "\n" + "\n".join(lines)
 
     async def _maybe_auto_meal(self) -> None:
         """饿/渴到极点还没动：终端替她吃一口、喝一口，别让她一直饿着。
@@ -12489,9 +12538,33 @@ class HumanCorePlugin(Star):
         return max(0.0, cash), max(0.0, savings)
 
     def _money_line(self) -> str:
-        """她知道自己有多少钱——不知道就会说出「我没钱」这种和账本矛盾的话。"""
+        """她知道自己有多少钱——不知道就会说出「我没钱」这种和账本矛盾的话。
+
+        本能模式下只给 ``[Wallet: ...]`` 标签（执行文档 5.2）；「不缺钱、别开口要钱」
+        这条边界作为独立规则行保留，不塞进标签里（5.3）。
+        """
         cash, savings = self._money_pool()
         total = round(cash + savings, 2)
+        if self.cfg_bool("instinct_mode", False):
+            try:
+                owed = float((getattr(self.state, "finance", {}) or {}).get("owed") or 0)
+            except Exception:
+                owed = 0.0
+            fields = {
+                "Cash": round(float(cash or 0), 2),
+                "Savings": round(float(savings or 0), 2),
+                "Total": total,
+                "Debt": round(owed, 2),
+            }
+            if _label_bus is not None:
+                line = _label_bus.format_tag("Wallet", fields, ts=now_ts())
+            else:  # 兜底
+                line = ("[Wallet: Cash=%.2f, Savings=%.2f, Total=%.2f, Debt=%.2f]"
+                        % (fields["Cash"], fields["Savings"], fields["Total"], fields["Debt"]))
+            if total >= 500 and cash < 500:
+                line += ("\n【规则】卡里不够时花销会先从储蓄里扣——你并不缺钱，"
+                         "别跟任何人开口要钱，也别哭穷。")
+            return line
         text = ("【钱】你卡里还有 ¥%.0f，储蓄里 ¥%.0f，合计 ¥%.0f"
                 "（这是你自己的钱，花之前心里有数）" % (cash, savings, total))
         if total >= 500 and cash < 500:

@@ -1563,5 +1563,10 @@
     "description": "守护接管发送",
     "default": false,
     "hint": "打开后：终端只决定说什么，润色、分段、逐条发送都交给 Astrbot_Amo_Guard；守护异常时自动退回本地分段引擎。"
-  }
-}
+  },
+  "instinct_mode": {
+    "type": "bool",
+    "description": "本能模式（身体只给标签）",
+    "default": false,
+    "hint": "打开后身体事实只注入 [Body: Hunger=..., ts=...] 标签，不再写「饿得手发抖」这类长句；兜底喂食不变。先灰度再全量。"
+  }}
