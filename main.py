@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.3.9"
+PLUGIN_VERSION = "9.4.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -9011,17 +9011,20 @@ class HumanCorePlugin(Star):
             return
 
         if need_food:
-            cheapest = ""
+            best = ""
             quote = getattr(plugin, "food_quote", None)
             if callable(quote):
                 try:
-                    rows = sorted((quote() or {}).get("ready") or [],
-                                  key=lambda row: float(row.get("price") or 0))
+                    # 按「能不能吃饱」挑，不是按最便宜挑：泡面 15 点，吃完还是饿。
+                    rows = [row for row in ((quote() or {}).get("ready") or [])
+                            if float(row.get("price") or 0) <= 80]
+                    rows.sort(key=lambda row: (-float(row.get("satiety") or 0),
+                                               float(row.get("price") or 0)))
                 except Exception:
                     rows = []
                 if rows:
-                    cheapest = str(rows[0].get("name") or "")
-            for dish in ([cheapest] if cheapest else []) + ["面"]:
+                    best = str(rows[0].get("name") or "")
+            for dish in ([best] if best else []) + ["晚餐"]:
                 try:
                     result = propose(dish, "order") or {}
                 except Exception as exc:
