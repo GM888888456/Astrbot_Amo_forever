@@ -82,12 +82,14 @@ class ScopeTests(unittest.TestCase):
         obj = build(finance={"balance": 0.0, "savings": 20000.0})
         self.assertEqual(obj._borrow_line(can_ask=True), "")
 
-    def test_debt_line_nudges_real_repay_when_affordable(self):
+    def test_debt_line_states_money_as_fact(self):
+        """去禁令化之后：只报「欠多少、手里多少」，不再命令她必须还。"""
         obj = build(finance={"balance": 10000.0, "savings": 25000.0}, owed=11639.13)
         text = obj._debt_line(can_ask=True)
-        self.assertIn("amo_repay", text)
-        self.assertIn("够还了", text)
-        self.assertIn("[还款]", text)
+        self.assertIn("欠他", text)
+        self.assertIn("35000", text)
+        self.assertNotIn("够还了", text)
+        self.assertNotIn("必须", text)
 
     def test_debt_line_stays_quiet_when_broke(self):
         obj = build(finance={"balance": 10.0, "savings": 0.0}, owed=11639.13)

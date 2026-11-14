@@ -231,7 +231,7 @@ class DebtTests(unittest.TestCase):
         text = self._plugin(owed=800.0)._debt_line(can_ask=True)
         self.assertIn("欠他", text)
         self.assertIn("amo_repay", text)
-        self.assertIn("依赖", text)
+        self.assertNotIn("别只在嘴上说", text)   # 去禁令化：只给事实，不命令她
 
     def test_debt_line_clear(self):
         self.assertEqual(self._plugin(owed=0.0)._debt_line(can_ask=True), "")

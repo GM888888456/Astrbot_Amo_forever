@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.4.5"
+PLUGIN_VERSION = "9.5.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -1128,6 +1128,9 @@ def strip_chat_format(text):
 
 _PSEUDO_BLOCK_RE = re.compile(r"<astrbot_execute_python>.*?</astrbot_execute_python>", re.S | re.I)
 _PSEUDO_TAG_RE = re.compile(r"</?(?:astrbot|amo)_[a-z_]+[^>]*>|</?text\b[^>]*>", re.I)
+#: 模型把「思考」标签当正文吐出来：48 小时里漏了 50 次（她会发一条 "<thought>" 再发一条 "</thought>…"）
+_THOUGHT_BLOCK_RE = re.compile(r"<(thought|thinking|reasoning|analysis)\b[^>]*>.*?</\1>", re.S | re.I)
+_THOUGHT_TAG_RE = re.compile(r"</?(?:thought|thinking|reasoning|analysis)\b[^>]*>", re.I)
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.S)
 
 
@@ -1143,6 +1146,8 @@ def strip_pseudo_tags(text):
     """
     body = _DSML_RE.sub("", str(text or ""))
     body = _DSML_BARE_RE.sub("", body)
+    body = _THOUGHT_BLOCK_RE.sub("", body)
+    body = _THOUGHT_TAG_RE.sub("", body)
     body = _PSEUDO_BLOCK_RE.sub("", body)
     body = _PSEUDO_TAG_RE.sub("", body)
     body = _CODE_FENCE_RE.sub("", body)
@@ -3785,31 +3790,6 @@ class HumanState:
         ("陪他", "自己待着"),
     )
 
-    def _strip_his_from_text(self, text):
-        """小日记里也不许出现他（可以想他，但不写成他就在旁边）。
-
-        活动条目早就过 `_strip_his_presence`，但日记是自由文本，模型会把「阿墨睡在旁边」
-        写进去——面板上一看就是「日程里又有他了」。这里按句子清理：含他/阿墨/老公/主人
-        的整句去掉；剩下的太短就交给调用方兜底。
-        """
-        body = str(text or "").strip()
-        if not body:
-            return ""
-        for old, new in self.HIS_REWRITES:
-            body = body.replace(old, new)
-        parts = re.split(r"(?<=[。！？!?；;\n])", body)
-        kept = []
-        for part in parts:
-            if not part.strip():
-                continue
-            if any(word in part for word in ("阿墨", "老公", "主人")):
-                continue
-            if re.search(r"(?<!其)他(?!们)", part):
-                continue
-            kept.append(part)
-        out = "".join(kept).strip()
-        return out if len(out) >= 12 else ""
-
     def _sanitize_schedule(self, sched):
         """任何写库/加载的日程都过一遍：他只能出现在聊天里。"""
         try:
@@ -4553,8 +4533,7 @@ class HumanState:
                 "2. 写清地点、正在做的动作、一个小细节（手上的东西、周围的声音、天气的体感）；\n"
                 "3. 带一点当时的情绪和心里话，口语化，像真的日记；\n"
                 "4. 每段之间要承接，不能矛盾，也不要整段重复上一段；\n"
-                "5. **他今天不在你身边**：不要写他在房间里、床上、你身边，也不要写一起吃饭/一起出门；"
-                "可以写你想起他、看了眼手机，但不能让他真的在场。\n"
+                "5. 这一小时是你自己的日子：写你自己在做什么、想什么。\n"
                 "只输出 JSON 数组：[{\"start\":\"07:00\",\"diary\":\"……\"}]，不要解释。\n\n"
                 % (chunk[0].get("start") or "", chunk[-1].get("end") or "", "\n".join(lines))
             )
@@ -4574,9 +4553,6 @@ class HumanState:
                 start = str(row.get("start") or "").strip()
                 text = str(row.get("diary") or row.get("text") or "").strip()
                 if not start or len(text) < 20:
-                    continue
-                text = self._strip_his_from_text(text) or ""
-                if not text:
                     continue
                 try:
                     self.db.save_diary(day, start, text)
@@ -4615,7 +4591,7 @@ class HumanState:
         if not start:
             return {"diary": "", "mood": "平静", "place": "", "activity": ""}
         if not force:
-            cached = self._strip_his_from_text(self.db.get_diary(day, start) or "")
+            cached = self.db.get_diary(day, start)
             if cached:
                 return {
                     "diary": cached,
@@ -4664,8 +4640,6 @@ class HumanState:
                 item.get("place") or "家", item.get("activity") or "待着",
                 item.get("mood") or "平静",
             )
-        result["diary"] = self._strip_his_from_text(result["diary"]) or (
-            "这小时我在%s，%s。" % (item.get("place") or "家", item.get("activity") or "待着"))
         self.db.save_diary(day, start, result["diary"])
         return result
 
@@ -8167,7 +8141,6 @@ class HumanCorePlugin(Star):
             "现在是 %s，你正在%s（%s），穿着%s。\n"
             "这一小时已经写下的小日记：\n%s\n\n"
             "这一小时你和他刚聊过（只算私聊）：\n%s\n\n"
-            "（他今天不在你身边：不要写成他就在旁边，只能写你聊了什么、心情怎么变。）\n"
             "请把「聊天里真正发生的事」补进这一小时的日记：\n"
             "1. 只补充，不要推翻已经写下的内容；原日记里有的地点、天气、穿着保持不变；\n"
             "2. 聊天只影响「你聊了什么、心情怎么变」，不能改你在哪、在做什么；\n"
@@ -8977,15 +8950,11 @@ class HumanCorePlugin(Star):
         if satiety < starving_at:
             texts.append(
                 "【状态：极度饥饿 %.0f/100】你很久没吃东西了，胃里发空、手有点抖，"
-                "注意力没法集中，说话也没力气。**这一轮先调用 amo_eat(dish=你想吃的, method=auto) "
-                "真的吃一口，吃完再说话**——只把「饿」说出来不算数。"
-                "买不起就照实说没钱，不要假装不饿。" % satiety)
+                "注意力没法集中，说话也没力气。" % satiety)
             self._spawn(self._maybe_hunger_sick())
             self._spawn(self._maybe_auto_meal())
         elif satiety < hungry_at:
-            texts.append(
-                "【状态：饥饿 %.0f/100】你有点饿了，注意力开始散。"
-                "顺手调用 amo_eat 买点吃的（method=auto），别只挂在嘴上说饿。" % satiety)
+            texts.append("【状态：饥饿 %.0f/100】你有点饿了，注意力开始散。" % satiety)
         if hydration < hungry_at:
             try:
                 last_thirst = float(self.db.kv_get("thirst_hint_ts", 0) or 0)
@@ -8993,9 +8962,7 @@ class HumanCorePlugin(Star):
                 last_thirst = 0.0
             gap = 30 * 60 if hydration < 10 else 90 * 60
             if now_ts() - last_thirst >= gap:
-                texts.append(
-                    "【状态：口渴 %.0f/100】你渴了。这一轮先调用 "
-                    "amo_eat(dish=水, method=drink) 喝掉再说话，别只挂在嘴上说不做。" % hydration)
+                texts.append("【状态：口渴 %.0f/100】你渴了，嗓子发干。" % hydration)
                 try:
                     self.db.kv_set("thirst_hint_ts", now_ts())
                 except Exception:
@@ -9009,13 +8976,12 @@ class HumanCorePlugin(Star):
         except Exception:
             age = 1e9
         if last and age < 6 * 3600:
-            texts.append("【你刚才吃了】%d 分钟前你吃了%s。别否认，也别装作没吃过。" % (
+            texts.append("【你刚才吃了】%d 分钟前你吃了%s。" % (
                 max(1, int(age // 60)), str(last.get("dish") or "点东西")))
         if texts:
             menu = self._food_menu()
             if menu:
-                texts.append("【现在能吃的】" + menu + "。要用 amo_eat 工具去买或去做；按你人格里的口味挑，别默认某一道菜，别自己编价格。"
-                             "想做饭又拿不准时用 method=auto：会按今日菜价比较做饭和外卖，外卖没有的菜就自己做。")
+                texts.append("【现在能吃的（价格来自金融）】" + menu)
         return ("\n" + "\n".join(texts)) if texts else ""
 
     async def _maybe_auto_meal(self) -> None:
@@ -12566,19 +12532,18 @@ class HumanCorePlugin(Star):
         cash, savings = self._money_pool()
         usable = cash + savings
         text = (
-            "【你欠他 ¥%.0f】这些是借款，没有利息——正因如此你更依赖他、更黏他。"
-            "手里有钱、觉得该还的时候，用 amo_repay 转给他（记成还款，不是消费）；"
-            "别天天把欠钱挂嘴上，也别装作没这回事。"
-            "**如果你在回复里报了还款金额，就必须同一轮调用 amo_repay；"
-            "只在嘴上说还多少、没扣钱，他会以为钱到账了。**"
-            % owed
+            "【你欠他 ¥%.0f】借款，没有利息；你手里卡+储蓄 ¥%.0f。"
+            "还款走 amo_repay，记成还款（不是消费）。"
+            % (owed, usable)
         )
-        if usable >= min(owed, 500.0):
-            text += (
-                "（你现在卡里+储蓄有 ¥%.0f，够还了：别只在嘴上说「我还你」，"
-                "这轮就真的用 amo_repay 还一部分——还多少自己定，建议先还一半；"
-                "还完聊天里会出现「[还款]金额」给他看到。）" % usable
-            )
+        try:
+            pending = self.db.kv_get("repay_pending", {}) or {}
+            amount = float(pending.get("amount") or 0) if isinstance(pending, dict) else 0.0
+            stamp = float(pending.get("ts") or 0) if isinstance(pending, dict) else 0.0
+            if amount >= 50 and stamp and now_ts() - stamp < 12 * 3600:
+                text += "你上次说过要还 ¥%.0f，账上还没动。" % amount
+        except Exception:
+            pass
         return text
 
     def _repay_line(self, private: bool = True) -> str:
@@ -12685,16 +12650,16 @@ class HumanCorePlugin(Star):
             number = 0.0
         return round(total + section + number, 2)
 
-    async def _settle_repay_promise(self, event, text) -> None:
-        """她报了还款金额却没调 amo_repay：按她说的真扣，别让账本和嘴上对不上。
+    def _note_repay_promise(self, event, text) -> None:
+        """她报了还款金额却没调 amo_repay：记一条事实，不替她扣钱。
 
-        只在私聊兜底（群里她本来就不该提钱），10 分钟最多一次，
-        金额 < 50 不算数（那是「还你啊」这种客气话）。
+        以前这里是直接扣——那等于替她做决定。现在只在下一轮的上下文里说一句
+        「你上次说过要还 X，账上还没动」，补不补她自己拿主意。
         """
         if getattr(event, "amo_repay_done", False):
             return
         body = str(text or "")
-        if not body or "还你" not in body:
+        if "还你" not in body:
             return
         try:
             if not event.is_private_chat():
@@ -12707,54 +12672,11 @@ class HumanCorePlugin(Star):
         amount = self._parse_amount(matched.group(1))
         if amount < 50:
             return
-        now = now_ts()
         try:
-            last = float(self.db.kv_get("repay_promise_ts", 0) or 0)
-        except Exception:
-            last = 0.0
-        if last and now - last < 600:
-            return
-        plugin = self._finance()
-        payer = getattr(plugin, "repay", None) if plugin is not None else None
-        if not callable(payer):
-            return
-        try:
-            result = payer(amount, notify=False) or {}
-        except TypeError:
-            try:
-                result = payer(amount) or {}
-            except Exception:
-                return
-        except Exception as exc:
-            logger.debug("[amo] 兜底还款失败: %s" % exc)
-            return
-        if not result.get("ok"):
-            logger.info("[amo] 她说了还款但扣不动：%s" % (result.get("reason") or "?"))
-            return
-        paid = float(result.get("paid") or 0)
-        remaining = float(result.get("remaining") or 0)
-        try:
-            self.db.kv_set("repay_promise_ts", now)
+            self.db.kv_set("repay_pending", {"ts": now_ts(), "amount": amount})
+            logger.info("[amo] 她说要还 %.0f，账上还没动（只记事实）" % amount)
         except Exception:
             pass
-        logger.info("[amo] 她嘴上说还 %.0f，已真扣 %.0f（还欠 %.0f）" % (amount, paid, remaining))
-        receipt = self._repay_message(paid, remaining)
-        if not receipt:
-            return
-        umo = ""
-        try:
-            umo = event.unified_msg_origin if event.is_private_chat() else ""
-        except Exception:
-            umo = ""
-        umo = umo or self._first_private_umo() or self._last_umo
-        if not umo:
-            return
-        try:
-            await self.context.send_message(umo, receipt)
-            logger.info("[amo] 还款回执已发：[还款]%s（还欠 %s）"
-                        % (self._money_text(paid), self._money_text(remaining)))
-        except Exception as exc:
-            logger.debug("[amo] 还款回执发送失败: %s" % exc)
 
     def _repay_message(self, amount, remaining) -> str:
         """还款回执：第一行 [还款]金额，第二行说人话。
@@ -12847,6 +12769,11 @@ class HumanCorePlugin(Star):
         uid = self._canonical_uid(event)
         profile = self.db.get_profile(uid)
         relation = profile.get("relation", "普通")
+        try:
+            if relation in ("相恋", "恋人", "主人") and event.is_private_chat():
+                self._track_his_place(event.message_str or "")
+        except Exception as exc:
+            logger.debug("[amo] 记他在哪失败: %s" % exc)
         try:
             await self._maybe_follow_city(event, uid, profile)
         except Exception as exc:
@@ -12984,6 +12911,20 @@ class HumanCorePlugin(Star):
                 )
                 if travel_text:
                     parts.append(travel_text)
+        except Exception:
+            pass
+        try:
+            place = self.db.kv_get("he_place", {}) or {}
+            if isinstance(place, dict) and place.get("away"):
+                where = str(place.get("city") or "").strip()
+                if where:
+                    parts.append(
+                        "【他在" + where + "】他人不在东莞、也不在家，你们不同城。"
+                    )
+                else:
+                    parts.append(
+                        "【他在外地】他人不在东莞、也不在家，具体在哪他没细说。"
+                    )
         except Exception:
             pass
         try:
@@ -13490,6 +13431,7 @@ class HumanCorePlugin(Star):
             return "还不了：%s" % (result.get("reason") or "没有可还的金额")
         try:
             event.amo_repay_done = True
+            self.db.kv_set("repay_pending", {})
         except Exception:
             pass
         self._sync_finance()
@@ -13653,9 +13595,9 @@ class HumanCorePlugin(Star):
             except Exception:
                 pass
             try:
-                await self._settle_repay_promise(event, text)
+                self._note_repay_promise(event, text)
             except Exception as exc:
-                logger.debug("[amo] 还款承诺兜底失败: %s" % exc)
+                logger.debug("[amo] 记还款承诺失败: %s" % exc)
             # 先判断要不要补图：表情包/图片回复会被后面的非 Plain 检查提前 return，
             # 所以放在这里，保证「拍给我看看」即使她只回表情也能触发
             if self.draw is not None:
@@ -16344,6 +16286,41 @@ class HumanCorePlugin(Star):
         except Exception as exc:
             logger.debug("[amo] 城市名解析失败: %s" % exc)
             return None
+
+    #: 他说「在外地/出差」这类没有城市名的说法
+    HE_AWAY_WORDS = ("外地", "出差", "不在本地", "外省", "在外头", "回不来", "还没回")
+    #: 他说自己回来了
+    HE_HOME_WORDS = ("我回来了", "回来了", "到家了", "我在家", "回东莞", "到东莞了")
+
+    def _track_his_place(self, text):
+        """记住他人在哪：说了城市就记城市，只说「在外地/出差」就记「外地」。
+
+        以前只有 `_city_detect`：他一句「我在外地」认不出城市，于是什么都不记，
+        她那边就当他在家——然后说「你在家」「你慢点开」，全错。
+        """
+        body = str(text or "").strip()
+        if not body:
+            return
+        if not any(word in body for word in
+                   ("我在", "我到", "我回", "人还", "出差", "外地", "在温州", "在杭州")):
+            return
+        if any(word in body for word in self.HE_HOME_WORDS):
+            self.db.kv_set("he_place", {"ts": now_ts(), "city": _CITY_DEFAULT, "away": False})
+            return
+        name = ""
+        try:
+            hit = _city_detect(body) if _city_detect is not None else None
+            name = str((hit or {}).get("name") or "").strip()
+        except Exception:
+            name = ""
+        if name:
+            self.db.kv_set("he_place", {"ts": now_ts(), "city": name,
+                                        "away": name != _CITY_DEFAULT})
+            logger.info("[amo] 记住他在哪：%s（%s）" % (name, "外地" if name != _CITY_DEFAULT else "同城"))
+            return
+        if any(word in body for word in self.HE_AWAY_WORDS):
+            self.db.kv_set("he_place", {"ts": now_ts(), "city": "", "away": True})
+            logger.info("[amo] 记住他在哪：外地（没细说城市）")
 
     async def _maybe_follow_city(self, event, uid, profile):
         """他到了某地：她问「我来陪你吧」；同意就跟去（路上约 2 小时），拒绝就闷闷不乐。"""
