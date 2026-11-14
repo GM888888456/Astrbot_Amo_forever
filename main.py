@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.4.4"
+PLUGIN_VERSION = "9.4.5"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -12569,6 +12569,8 @@ class HumanCorePlugin(Star):
             "【你欠他 ¥%.0f】这些是借款，没有利息——正因如此你更依赖他、更黏他。"
             "手里有钱、觉得该还的时候，用 amo_repay 转给他（记成还款，不是消费）；"
             "别天天把欠钱挂嘴上，也别装作没这回事。"
+            "**如果你在回复里报了还款金额，就必须同一轮调用 amo_repay；"
+            "只在嘴上说还多少、没扣钱，他会以为钱到账了。**"
             % owed
         )
         if usable >= min(owed, 500.0):
@@ -12639,6 +12641,120 @@ class HumanCorePlugin(Star):
             number = 0.0
         text = ("%.2f" % number).rstrip("0").rstrip(".")
         return text or "0"
+
+    #: 「先还你两千」「还你 500 块」这类承诺
+    REPAY_PROMISE_RE = re.compile(
+        r"(?<!回头)(?<!以后再)(?:先|先还|这就|马上|现在就|今天)?\s*还你\s*(?:¥|￥)?\s*"
+        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万]+)\s*(?:元|块|rmb)?"
+    )
+    _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+                  "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    _CN_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+
+    @classmethod
+    def _parse_amount(cls, raw) -> float:
+        """「2000」「两千」「一千二」→ 数字；认不出返回 0。"""
+        text = str(raw or "").strip().rstrip("元块")
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        total = 0.0
+        section = 0.0
+        number = 0.0
+        last_unit = 0
+        for ch in text:
+            if ch in cls._CN_DIGITS:
+                number = float(cls._CN_DIGITS[ch])
+            elif ch in cls._CN_UNITS:
+                unit = cls._CN_UNITS[ch]
+                if unit == 10000:
+                    total += (section + number) * unit
+                    section, number = 0.0, 0.0
+                else:
+                    section += (number or 1) * unit
+                    number = 0.0
+                last_unit = unit
+            else:
+                return 0.0
+        if number and last_unit > 10:
+            # 「一千二」= 1200，不是 1002
+            section += number * (last_unit // 10)
+            number = 0.0
+        return round(total + section + number, 2)
+
+    async def _settle_repay_promise(self, event, text) -> None:
+        """她报了还款金额却没调 amo_repay：按她说的真扣，别让账本和嘴上对不上。
+
+        只在私聊兜底（群里她本来就不该提钱），10 分钟最多一次，
+        金额 < 50 不算数（那是「还你啊」这种客气话）。
+        """
+        if getattr(event, "amo_repay_done", False):
+            return
+        body = str(text or "")
+        if not body or "还你" not in body:
+            return
+        try:
+            if not event.is_private_chat():
+                return
+        except Exception:
+            return
+        matched = self.REPAY_PROMISE_RE.search(body)
+        if not matched:
+            return
+        amount = self._parse_amount(matched.group(1))
+        if amount < 50:
+            return
+        now = now_ts()
+        try:
+            last = float(self.db.kv_get("repay_promise_ts", 0) or 0)
+        except Exception:
+            last = 0.0
+        if last and now - last < 600:
+            return
+        plugin = self._finance()
+        payer = getattr(plugin, "repay", None) if plugin is not None else None
+        if not callable(payer):
+            return
+        try:
+            result = payer(amount, notify=False) or {}
+        except TypeError:
+            try:
+                result = payer(amount) or {}
+            except Exception:
+                return
+        except Exception as exc:
+            logger.debug("[amo] 兜底还款失败: %s" % exc)
+            return
+        if not result.get("ok"):
+            logger.info("[amo] 她说了还款但扣不动：%s" % (result.get("reason") or "?"))
+            return
+        paid = float(result.get("paid") or 0)
+        remaining = float(result.get("remaining") or 0)
+        try:
+            self.db.kv_set("repay_promise_ts", now)
+        except Exception:
+            pass
+        logger.info("[amo] 她嘴上说还 %.0f，已真扣 %.0f（还欠 %.0f）" % (amount, paid, remaining))
+        receipt = self._repay_message(paid, remaining)
+        if not receipt:
+            return
+        umo = ""
+        try:
+            umo = event.unified_msg_origin if event.is_private_chat() else ""
+        except Exception:
+            umo = ""
+        umo = umo or self._first_private_umo() or self._last_umo
+        if not umo:
+            return
+        try:
+            await self.context.send_message(umo, receipt)
+            logger.info("[amo] 还款回执已发：[还款]%s（还欠 %s）"
+                        % (self._money_text(paid), self._money_text(remaining)))
+        except Exception as exc:
+            logger.debug("[amo] 还款回执发送失败: %s" % exc)
 
     def _repay_message(self, amount, remaining) -> str:
         """还款回执：第一行 [还款]金额，第二行说人话。
@@ -13361,6 +13477,7 @@ class HumanCorePlugin(Star):
             return "我现在没法转账（金融插件没连上）。"
         try:
             value = float(amount or 0)
+            logger.info("[amo] amo_repay 调用：%s" % ("全部" if value <= 0 else "%.0f" % value))
             try:
                 result = payer(value if value > 0 else 10 ** 9, notify=False) or {}
             except TypeError:
@@ -13369,7 +13486,12 @@ class HumanCorePlugin(Star):
             logger.debug("[amo] amo_repay 失败: %s" % exc)
             return "转账没成功，等会儿再说。"
         if not result.get("ok"):
+            logger.info("[amo] amo_repay 没成：%s" % (result.get("reason") or "没有可还的金额"))
             return "还不了：%s" % (result.get("reason") or "没有可还的金额")
+        try:
+            event.amo_repay_done = True
+        except Exception:
+            pass
         self._sync_finance()
         paid = float(result.get("paid") or 0)
         remaining = float(result.get("remaining") or 0)
@@ -13530,6 +13652,10 @@ class HumanCorePlugin(Star):
                         alerts[str(event.unified_msg_origin)] = now_ts()
             except Exception:
                 pass
+            try:
+                await self._settle_repay_promise(event, text)
+            except Exception as exc:
+                logger.debug("[amo] 还款承诺兜底失败: %s" % exc)
             # 先判断要不要补图：表情包/图片回复会被后面的非 Plain 检查提前 return，
             # 所以放在这里，保证「拍给我看看」即使她只回表情也能触发
             if self.draw is not None:
