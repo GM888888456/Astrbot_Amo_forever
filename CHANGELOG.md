@@ -1,5 +1,12 @@
 # Changelog
 
+## 9.5.5（阶段 5：接守护后处理）
+
+- 新增 `guard_bridge.py`：把回复交给 `Astrbot_Amo_Guard` 做最后一道工序（润色/去重/表情裁剪/空内容兜底）。
+- 接线点：`on_decorating_result` 里 `_trim_reply` 之前；`guard_text_enable` 默认 **false**，守护没装/超时/报错一律走原文。
+- 三个新配置：`guard_text_enable`、`guard_text_task_type`（默认 `polish`，拆条仍归本地分段引擎）、`guard_text_timeout_ms`（默认 2000）。
+- 断句想交给守护时可改 `guard_text_task_type=format` 并关掉 `seg_enable`，避免拆两遍。
+- 测试：新增 12 条（缺席/超时/报错/多段/任务载荷），全量 874 条通过。
 ## 9.5.4（阶段 1：事件总线 / 基线 / 标签）
 
 - 新增 `event_bus.py`：提案校验、event_id 幂等（重放不重复扣费、金额/理由变了回 `idempotency_conflict`）、基线加权、心流打分回调、回执 ACK 与失败重试窗口。

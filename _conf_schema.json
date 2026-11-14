@@ -1539,5 +1539,23 @@
     "description": "【私密】每天最多拍几张",
     "default": 2,
     "hint": "达到上限当天不再答应；失败不占次数。"
+  },
+  "guard_text_enable": {
+    "type": "bool",
+    "description": "回复过守护后处理",
+    "default": false,
+    "hint": "打开后，回复在发送前交给 Astrbot_Amo_Guard 做润色/去重/表情裁剪。守护没装、超时或报错时自动用原文。"
+  },
+  "guard_text_task_type": {
+    "type": "string",
+    "description": "守护加工类型",
+    "default": "polish",
+    "hint": "polish 只润色不拆条（分段仍由本地分段引擎负责）；format 会连断句一起做，需要同时关掉 seg_enable 才不会拆两遍。"
+  },
+  "guard_text_timeout_ms": {
+    "type": "int",
+    "description": "守护超时（毫秒）",
+    "default": 2000,
+    "hint": "超过这个时间直接发原文，不阻塞对话。"
   }
 }

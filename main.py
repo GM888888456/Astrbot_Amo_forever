@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.5.4"
+PLUGIN_VERSION = "9.5.5"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -1130,6 +1130,14 @@ try:
     from .text_clean import strip_pseudo_tags
 except ImportError:  # 直接按文件加载时
     from text_clean import strip_pseudo_tags
+
+try:
+    from .guard_bridge import process_reply_text as _guard_process_reply
+except Exception:
+    try:
+        from guard_bridge import process_reply_text as _guard_process_reply
+    except Exception:  # pragma: no cover
+        _guard_process_reply = None
 
 
 def clean_reply(text, limit=300):
@@ -13717,6 +13725,21 @@ class HumanCorePlugin(Star):
                         logger.debug("[amo] 去掉赶人的话: %s" % brush)
                 except Exception:
                     pass
+            # 守护做最后一道工序（润色/去重/表情裁剪/兜底）；缺席、超时、报错都走原文
+            if _guard_process_reply is not None and self.cfg_bool("guard_text_enable", False):
+                try:
+                    _pieces = await _guard_process_reply(
+                        self,
+                        text,
+                        "group" if group else "private",
+                        timeout_ms=self.cfg_int("guard_text_timeout_ms", 2000),
+                        task_type=self.cfg_str("guard_text_task_type", "polish"),
+                    )
+                    if _pieces:
+                        text = "\n".join(_pieces)
+                        result.chain = [Comp.Plain(text)]
+                except Exception as _guard_exc:
+                    logger.debug("[amo] 守护后处理失败，用原文: %s" % _guard_exc)
             text = self._trim_reply(text)
             result.chain = [Comp.Plain(text)]
 
