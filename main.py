@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.5.8"
+PLUGIN_VERSION = "9.5.9"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -6397,7 +6397,9 @@ class HumanCorePlugin(Star):
             return "市场没有「%s」。" % word
         name = str(row.get("name") or word)
         price = round(float(row.get("price") or 0), 2)
-        result = await self.charge(price, reason="买%s" % name, payee="市场", source="market")
+        scene = "private" if event.is_private_chat() else "group"
+        result = await self._approved_charge(
+            price, reason="买%s" % name, payee="市场", source="market", scene=scene)
         if not result.get("ok"):
             return "没买成：%s" % (result.get("reason") or "钱不够")
         tail = ""
@@ -18658,6 +18660,45 @@ class HumanCorePlugin(Star):
             return {"enabled": False, "stats": {}, "recent": {}}
         return {"enabled": self.cfg_bool("event_bus_enable", True),
                 "stats": bus.stats(), "recent": bus.recent(10)}
+
+    async def _approved_charge(self, amount, *, reason="", payee="", source="",
+                               scene="private", detail="", uid="") -> dict:
+        """花钱前先提案：没拿到 allow 就不扣；扣完无论成败都发回执。
+
+        幂等号直接用 event_id：同一次调用的重试只扣一次。
+        """
+        value = round(float(amount or 0), 2)
+        event_id = "%s-%s" % (source or "spend", uuid.uuid4().hex[:12])
+        kind = {"medical": "medical_treat", "market": "market_buy",
+                "image": "image_draw", "speech": "speech_synth"}.get(source, "market_buy")
+        decision = self.submit_event({
+            "event_id": event_id,
+            "event_type": kind,
+            "source": source or "terminal",
+            "scene": "group" if str(scene or "").lower() == "group" else "private",
+            "payload": {"cost": value, "reason": reason or "",
+                        "detail": {"payee": payee, "note": detail}},
+            "need_approve": True,
+        })
+        if not decision.get("approved"):
+            return {"ok": False, "code": str(decision.get("decision") or "deny"),
+                    "reason": str(decision.get("reason") or "终端没批"),
+                    "balance": self.balance(), "event_id": event_id}
+        result = await self.charge(value, reason=reason, payee=payee,
+                                   request_id=event_id, source=source,
+                                   detail=detail, uid=uid)
+        try:
+            self.event_receipt({
+                "event_id": event_id,
+                "status": "success" if result.get("ok") else "fail",
+                "code": str(result.get("code") or ""),
+                "reason": str(result.get("reason") or ""),
+                "amount": value,
+                "balance": result.get("balance"),
+            })
+        except Exception as exc:
+            logger.debug("[amo] 回执失败: %s" % exc)
+        return dict(result, event_id=event_id)
 
     async def charge(self, amount, reason: str = "", payee: str = "",
                      request_id: str = "", source: str = "", detail: str = "",
