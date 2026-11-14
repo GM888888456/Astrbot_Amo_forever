@@ -24,6 +24,16 @@ class RadarToggleTests(unittest.TestCase):
         self.assertIn('desire ? DESIRE_CN : EMOTION_CN', self.html)
         self.assertIn('desire ? "六欲（只读）" : "七情（只读）"', self.html)
 
+    def test_schedule_tab_is_back(self):
+        """「想法」搬去记忆面板了，终端这一格必须还给「日程」。"""
+        self.assertIn('data-tab="schedule"', self.html)
+        self.assertIn('id="tab-schedule"', self.html)
+        self.assertIn("function loadSchedule(", self.html)
+
+    def test_thoughts_tab_is_gone(self):
+        self.assertNotIn('data-tab="thoughts"', self.html)
+        self.assertNotIn('id="tab-thoughts"', self.html)
+
     def test_both_toggles_rerender_hero(self):
         """双击和手机短按两次这两条路径都要重算标题。"""
         self.assertEqual(self.html.count("renderHero();"), 3)  # 1 次定义调用 + 2 个切换口
