@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.5.1"
+PLUGIN_VERSION = "9.5.2"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -9232,6 +9232,10 @@ class HumanCorePlugin(Star):
                 await self.wardrobe.refresh()
             except Exception as exc:
                 logger.debug("[amo] 衣柜同步失败: %s" % exc)
+        try:
+            await self._import_diary_to_memory()
+        except Exception as exc:
+            logger.debug("[amo] 日记迁移失败: %s" % exc)
         bot_id = self._data_bot_id()
         marker = "data_plugin_migrated_" + bot_id
         migrated = bool(self.db.kv_get(marker, False))
@@ -14051,6 +14055,110 @@ class HumanCorePlugin(Star):
         except (TypeError, ValueError):
             return 10, 0
 
+    # ---------- 日记存储：记忆库优先，本地 txt 只当回退 ----------
+
+    async def _diary_store_put(self, day, text) -> str:
+        iso = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        ok = await self._data_call("diary_put", self._data_bot_id(), iso, str(text or ""), "我的日记")
+        if ok:
+            return "memory:" + iso
+        if callable(_diary_write):
+            try:
+                return _diary_write(self._diary_dir(), day, text)
+            except Exception as exc:
+                logger.debug("[amo] 日记落盘失败: %s" % exc)
+        return ""
+
+    async def _diary_store_get(self, day) -> str:
+        iso = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        text = await self._data_call("diary_get", self._data_bot_id(), iso)
+        if isinstance(text, str) and text.strip():
+            return text
+        if callable(_diary_read):
+            try:
+                return _diary_read(self._diary_dir(), day) or ""
+            except Exception:
+                return ""
+        return ""
+
+    async def _diary_store_tree(self):
+        rows = await self._data_call("diary_list", self._data_bot_id())
+        if not isinstance(rows, list) or not rows:
+            if callable(_diary_tree):
+                return await asyncio.to_thread(_diary_tree, self._diary_dir())
+            return {"total": 0, "latest": "", "years": [], "root": "记忆库"}
+        years = {}
+        latest = ""
+        for row in rows:
+            day = str((row or {}).get("day") or "")
+            if len(day) != 10:
+                continue
+            try:
+                y, m, d = int(day[:4]), int(day[5:7]), int(day[8:10])
+            except ValueError:
+                continue
+            latest = max(latest, day)
+            years.setdefault(y, {}).setdefault(m, []).append({
+                "date": day, "day": d,
+                "title": str((row or {}).get("title") or "我的日记"),
+                "chars": int((row or {}).get("chars") or 0),
+                "size": int((row or {}).get("chars") or 0),
+                "path": "memory:" + day,
+            })
+        total = 0
+        tree_years = []
+        for y in sorted(years, reverse=True):
+            months = []
+            for m in sorted(years[y], reverse=True):
+                days = sorted(years[y][m], key=lambda item: item["date"], reverse=True)
+                total += len(days)
+                months.append({"month": m, "days": days})
+            tree_years.append({"year": y, "months": months})
+        return {"total": total, "latest": latest, "years": tree_years, "root": "记忆库"}
+
+    async def _import_diary_to_memory(self) -> None:
+        """第一次接上记忆库：把本地 txt 日记搬进去（搬过一次就跳过）。"""
+        try:
+            if self.db.kv_get("diary_migrated", False):
+                return
+        except Exception:
+            pass
+        rows = await self._data_call("diary_list", self._data_bot_id())
+        if isinstance(rows, list) and rows:
+            try:
+                self.db.kv_set("diary_migrated", True)
+            except Exception:
+                pass
+            return
+        if not callable(_diary_tree) or not callable(_diary_read):
+            return
+        try:
+            tree = await asyncio.to_thread(_diary_tree, self._diary_dir())
+        except Exception:
+            return
+        moved = 0
+        for year in tree.get("years") or []:
+            for month in year.get("months") or []:
+                for item in month.get("days") or []:
+                    day = _diary_parse_day(item.get("date")) if callable(_diary_parse_day) else None
+                    if not day:
+                        continue
+                    try:
+                        text = _diary_read(self._diary_dir(), day) or ""
+                    except Exception:
+                        text = ""
+                    if not text.strip():
+                        continue
+                    if await self._data_call("diary_put", self._data_bot_id(),
+                                             day.isoformat(), text, "我的日记"):
+                        moved += 1
+        try:
+            self.db.kv_set("diary_migrated", True)
+        except Exception:
+            pass
+        if moved:
+            logger.info("[amo] 日记已搬进记忆库：%d 篇" % moved)
+
     async def _maybe_daily_diary(self):
         """每天 diary_time（默认 10:00）给「昨天」写一篇日记。"""
         if not self.cfg_bool("diary_enabled", True) or not callable(_diary_write):
@@ -14097,7 +14205,7 @@ class HumanCorePlugin(Star):
                         except Exception:
                             pass
                         continue
-                    path = _diary_write(self._diary_dir(), day, text)
+                    path = await self._diary_store_put(day, text)
                     try:
                         self.db.kv_set(guard, path)
                         self.db.kv_set("diary_last_day", day.isoformat())
@@ -17690,7 +17798,7 @@ class HumanCorePlugin(Star):
         await self._ensure_ready()
         if not callable(_diary_tree):
             return {"code": 1, "msg": "日记模块未加载"}
-        return {"code": 0, "data": await asyncio.to_thread(_diary_tree, self._diary_dir())}
+        return {"code": 0, "data": await self._diary_store_tree()}
 
     async def api_diary_read(self):
         await self._ensure_ready()
@@ -17698,7 +17806,7 @@ class HumanCorePlugin(Star):
         day = _diary_parse_day((payload or {}).get("date"))
         if not day:
             return {"code": 1, "msg": "日期格式应为 YYYY-MM-DD"}
-        text = _diary_read(self._diary_dir(), day) if callable(_diary_read) else ""
+        text = await self._diary_store_get(day)
         return {"code": 0, "data": {"date": day.isoformat(), "text": text}}
 
     async def api_diary_write(self):
@@ -17711,9 +17819,11 @@ class HumanCorePlugin(Star):
         if not text:
             return {"code": 1, "msg": "日记生成失败（没有素材或模型没返回）"}
         try:
-            path = _diary_write(self._diary_dir(), day, text)
+            path = await self._diary_store_put(day, text)
         except Exception as exc:
             return {"code": 1, "msg": "写入失败: %s" % exc}
+        if not path:
+            return {"code": 1, "msg": "写入失败：记忆库和本地都没落成"}
         try:
             self.db.kv_set("diary_written:" + day.isoformat(), path)
         except Exception:
