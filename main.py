@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.4.0"
+PLUGIN_VERSION = "9.4.1"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -10882,6 +10882,40 @@ class HumanCorePlugin(Star):
             return
         self.feelings.decay(minutes, sleeping=self._is_sleeping_hour())
         self._sync_hunger_from_vitals()
+        self._wake_energy_tick()
+
+    def _wake_energy_tick(self) -> None:
+        """早上睡醒精力回满，一天一次。
+
+        没有这一步，精力只会在 23:00–07:00 回涨，白天从 0 开始一路掉，
+        面板永远是「精力 0」，她也就一直显得没力气。
+        """
+        if getattr(self, "feelings", None) is None:
+            return
+        try:
+            import time as _time
+
+            now = _time.localtime()
+            hour, today = int(now.tm_hour), _time.strftime("%Y-%m-%d", now)
+        except Exception:
+            return
+        if hour < 7 or hour >= 23:
+            return
+        try:
+            if str(self.db.kv_get("energy_wake_date", "") or "") == today:
+                return
+        except Exception:
+            pass
+        try:
+            values = self.feelings.values()
+            if float(values.get("energy") or 0) >= 70:
+                self.db.kv_set("energy_wake_date", today)
+                return
+            self.feelings.set_physiology(energy=88.0)
+            self.db.kv_set("energy_wake_date", today)
+            logger.info("[amo] 早上醒了，精力回满")
+        except Exception as exc:
+            logger.debug("[amo] 睡醒回精力失败: %s" % exc)
 
     def _sync_hunger_from_vitals(self) -> None:
         """心流的「饿」直接跟着记忆库的饱食度走（饿 = 100 - 饱食度）。
