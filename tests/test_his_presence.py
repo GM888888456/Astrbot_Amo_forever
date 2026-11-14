@@ -95,5 +95,33 @@ class HisPresenceTests(unittest.TestCase):
         self.assertEqual(state._home_name(), "家")
 
 
+class DiaryHisStripTests(unittest.TestCase):
+    """小日记是自由文本，模型会把「阿墨睡在旁边」写进去——也得过他这道。"""
+
+    def test_sentences_with_him_are_dropped(self):
+        state = make_state()
+        text = ("屋里很安静。阿墨已经睡熟了，呼吸声一阵一阵的。"
+                "我翻了个身，脚背碰到他小腿，凉的。窗外雾很大，我把被子拉到下巴。")
+        out = state._strip_his_from_text(text)
+        self.assertNotIn("阿墨", out)
+        self.assertNotIn("他", out)
+        self.assertIn("窗外雾很大", out)
+
+    def test_only_him_leaves_nothing(self):
+        state = make_state()
+        self.assertEqual(state._strip_his_from_text("阿墨抱着我，我往他那边蹭了蹭。"), "")
+
+    def test_plain_diary_untouched(self):
+        state = make_state()
+        text = "窝在沙发上追剧，毯子拉到下巴，窗外雾很重。"
+        self.assertEqual(state._strip_his_from_text(text), text)
+
+    def test_other_people_are_not_removed(self):
+        """「其他」里的「他」不能误伤。"""
+        state = make_state()
+        text = "同事聊起别的项目，其他人都走了，我一个人把杯子洗了。"
+        self.assertEqual(state._strip_his_from_text(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()

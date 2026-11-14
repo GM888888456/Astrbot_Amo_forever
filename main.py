@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.4.2"
+PLUGIN_VERSION = "9.4.3"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -3779,6 +3779,31 @@ class HumanState:
         ("陪他", "自己待着"),
     )
 
+    def _strip_his_from_text(self, text):
+        """小日记里也不许出现他（可以想他，但不写成他就在旁边）。
+
+        活动条目早就过 `_strip_his_presence`，但日记是自由文本，模型会把「阿墨睡在旁边」
+        写进去——面板上一看就是「日程里又有他了」。这里按句子清理：含他/阿墨/老公/主人
+        的整句去掉；剩下的太短就交给调用方兜底。
+        """
+        body = str(text or "").strip()
+        if not body:
+            return ""
+        for old, new in self.HIS_REWRITES:
+            body = body.replace(old, new)
+        parts = re.split(r"(?<=[。！？!?；;\n])", body)
+        kept = []
+        for part in parts:
+            if not part.strip():
+                continue
+            if any(word in part for word in ("阿墨", "老公", "主人")):
+                continue
+            if re.search(r"(?<!其)他(?!们)", part):
+                continue
+            kept.append(part)
+        out = "".join(kept).strip()
+        return out if len(out) >= 12 else ""
+
     def _sanitize_schedule(self, sched):
         """任何写库/加载的日程都过一遍：他只能出现在聊天里。"""
         try:
@@ -4521,7 +4546,9 @@ class HumanState:
                 "1. 只写这一小时，不要提前写下一小时；\n"
                 "2. 写清地点、正在做的动作、一个小细节（手上的东西、周围的声音、天气的体感）；\n"
                 "3. 带一点当时的情绪和心里话，口语化，像真的日记；\n"
-                "4. 每段之间要承接，不能矛盾，也不要整段重复上一段。\n"
+                "4. 每段之间要承接，不能矛盾，也不要整段重复上一段；\n"
+                "5. **他今天不在你身边**：不要写他在房间里、床上、你身边，也不要写一起吃饭/一起出门；"
+                "可以写你想起他、看了眼手机，但不能让他真的在场。\n"
                 "只输出 JSON 数组：[{\"start\":\"07:00\",\"diary\":\"……\"}]，不要解释。\n\n"
                 % (chunk[0].get("start") or "", chunk[-1].get("end") or "", "\n".join(lines))
             )
@@ -4541,6 +4568,9 @@ class HumanState:
                 start = str(row.get("start") or "").strip()
                 text = str(row.get("diary") or row.get("text") or "").strip()
                 if not start or len(text) < 20:
+                    continue
+                text = self._strip_his_from_text(text) or ""
+                if not text:
                     continue
                 try:
                     self.db.save_diary(day, start, text)
@@ -4579,7 +4609,7 @@ class HumanState:
         if not start:
             return {"diary": "", "mood": "平静", "place": "", "activity": ""}
         if not force:
-            cached = self.db.get_diary(day, start)
+            cached = self._strip_his_from_text(self.db.get_diary(day, start) or "")
             if cached:
                 return {
                     "diary": cached,
@@ -4628,6 +4658,8 @@ class HumanState:
                 item.get("place") or "家", item.get("activity") or "待着",
                 item.get("mood") or "平静",
             )
+        result["diary"] = self._strip_his_from_text(result["diary"]) or (
+            "这小时我在%s，%s。" % (item.get("place") or "家", item.get("activity") or "待着"))
         self.db.save_diary(day, start, result["diary"])
         return result
 
@@ -8129,6 +8161,7 @@ class HumanCorePlugin(Star):
             "现在是 %s，你正在%s（%s），穿着%s。\n"
             "这一小时已经写下的小日记：\n%s\n\n"
             "这一小时你和他刚聊过（只算私聊）：\n%s\n\n"
+            "（他今天不在你身边：不要写成他就在旁边，只能写你聊了什么、心情怎么变。）\n"
             "请把「聊天里真正发生的事」补进这一小时的日记：\n"
             "1. 只补充，不要推翻已经写下的内容；原日记里有的地点、天气、穿着保持不变；\n"
             "2. 聊天只影响「你聊了什么、心情怎么变」，不能改你在哪、在做什么；\n"
