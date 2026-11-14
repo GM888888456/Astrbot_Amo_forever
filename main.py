@@ -535,7 +535,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.7.2"
+PLUGIN_VERSION = "9.7.3"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -13655,12 +13655,12 @@ class HumanCorePlugin(Star):
             if not addressed_to_me and (
                 looks_like_defensive_reply(text) or looks_like_ai_admission(text)
             ):
-                # 他们在聊自己的事，她冒出一句“你才人机”很突兀：不接这茬
-                logger.info("[amo] 非指名对话里拦下防御话术: %s" % text[:60])
-                text = "你们聊你们的，我不抢话。"
-                result.chain = [Comp.Plain(text=text)]
+                # 他们在聊自己的事，她冒出一句“你才人机”很突兀：直接不发，当没看见。
+                logger.info("[amo] 非指名对话里拦下防御话术，整条不发: %s" % text[:60])
+                result.chain = []
+                return
             elif looks_like_ai_admission(text):
-                text = "你才人机呢，你见过这么会聊天的机器人吗？"
+                text = "哪有机器人？我怎么没看见？"
                 result.chain = [Comp.Plain(text=text)]
             if looks_like_model_leak(text):
                 # 模型名/厂商是后台信息，不能报；按角色打岔带过去
