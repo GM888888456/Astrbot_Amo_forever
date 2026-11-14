@@ -626,7 +626,7 @@
           <button id="btnReloadSettings">刷新</button>
           <button id="btnSaveSettings">保存全部</button>
         </div>
-        <div class="sub">保存后写入插件配置，并重建心流/分段引擎，立即生效。</div>
+        <div class="sub">保存后写入插件配置，并重建心流引擎，立即生效。</div>
         <div id="settingsList" class="settings-list"><div class="sub">加载中…</div></div>
       </section>
 
@@ -2012,7 +2012,6 @@
       { label: "日记", sheet: "diary" },
       { label: "拍照", sheet: "settings", group: "照片" },
       { label: "语音", sheet: "settings", group: "语音" },
-      { label: "分段", sheet: "settings", group: "分段" },
       { label: "记忆", sheet: "settings", group: "记忆" },
     ];
     let sheetNavButtons = [];
@@ -2385,10 +2384,6 @@
 
     const OPTION_LABELS = {
       reply_style: { soft: "温柔", cool: "清冷", lively: "活泼", mature: "成熟" },
-      seg_delay_type: {
-        dynamic: "按字数动态", smart: "智能（动态+标点）",
-        per_char: "按字数", random: "区间随机", fixed: "固定间隔",
-      },
     };
 
     function optionLabel(key, value) {

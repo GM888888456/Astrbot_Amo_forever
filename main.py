@@ -144,14 +144,11 @@ except Exception:
 
 try:
     from .heartflow_engine import HeartflowEngine
-    from .segment_engine import SegmentEngine
 except Exception:
     try:
         from heartflow_engine import HeartflowEngine
-        from segment_engine import SegmentEngine
     except Exception:
         HeartflowEngine = None
-        SegmentEngine = None
         try:
             import importlib.util
             _engine_dir = os.path.dirname(os.path.abspath(__file__))
@@ -164,9 +161,16 @@ except Exception:
                 _spec.loader.exec_module(_module)
                 return getattr(_module, class_name)
             HeartflowEngine = _load_engine("heartflow_engine", "HeartflowEngine")
-            SegmentEngine = _load_engine("segment_engine", "SegmentEngine")
         except Exception as _engine_exc:
-            logger.error("[amo] 内置心流/分段模块加载失败: %s" % _engine_exc)
+            logger.error("[amo] 内置心流模块加载失败: %s" % _engine_exc)
+
+try:
+    from .send_bookkeeping import after_external_send as _after_external_send
+except Exception:
+    try:
+        from send_bookkeeping import after_external_send as _after_external_send
+    except Exception:
+        _after_external_send = None
 
 try:
     from .weather_alert import evaluate as evaluate_weather_alert, parse_daily as parse_weather_daily, next_check_slot, parse_clock, slot_key, is_weather_query, forecast_brief
@@ -531,7 +535,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.6.0"
+PLUGIN_VERSION = "9.7.0"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -566,7 +570,7 @@ except Exception:
 # 这些开关是面板/主链路的底座：隐藏开关并强制开启，避免误关后整块功能消失。
 FORCED_ON_CONFIG_KEYS = frozenset({
     "enable_group_reply", "enable_private_reply", "hf_enable_heartflow",
-    "seg_enable", "diary_enabled", "usage_stats_enabled",
+    "diary_enabled", "usage_stats_enabled",
 })
 
 #: 面板不展示、但仍可从配置文件改的键。
@@ -5732,7 +5736,6 @@ class HumanCorePlugin(Star):
         if self.photo is not None:
             logger.info("[amo] 照片引擎已加载（%s）" % ("开" if self.photo.enabled else "关"))
         self.heartflow = None
-        self.segment_engine = None
         try:
             if HeartflowEngine is not None:
                 hf_config = self._hf_config()
@@ -5745,12 +5748,8 @@ class HumanCorePlugin(Star):
                 except Exception:
                     pass
                 self.heartflow.set_identity(self.bot_name, self.bot_aliases)
-            if SegmentEngine is not None:
-                seg_config = self._seg_config()
-                seg_config.setdefault("protect_paired_symbols", True)
-                self.segment_engine = SegmentEngine(self.context, seg_config, plugin=self)
         except Exception as exc:
-            logger.error("[amo] 心流/分段引擎初始化失败: %s" % exc)
+            logger.error("[amo] 心流引擎初始化失败: %s" % exc)
         # 飞书适配器默认把每条回复都发成「引用回复」；私聊不该引用（群聊按概率）
         try:
             self._install_lark_quote_guard()
@@ -6264,12 +6263,12 @@ class HumanCorePlugin(Star):
                 return
             old_engine_config = {
                 key: value for key, value in self.config.items()
-                if key.startswith("hf_") or key.startswith("seg_")
+                if key.startswith("hf_")
             }
             self.config.update(data)
             new_engine_config = {
                 key: value for key, value in self.config.items()
-                if key.startswith("hf_") or key.startswith("seg_")
+                if key.startswith("hf_")
             }
             if old_engine_config and old_engine_config != new_engine_config:
                 self._spawn(self._apply_runtime_config())
@@ -6306,12 +6305,6 @@ class HumanCorePlugin(Star):
     def _hf_config(self):
         try:
             return {key[3:]: value for key, value in self.config.items() if key.startswith("hf_")}
-        except Exception:
-            return {}
-
-    def _seg_config(self):
-        try:
-            return {key[4:]: value for key, value in self.config.items() if key.startswith("seg_")}
         except Exception:
             return {}
 
@@ -6582,7 +6575,6 @@ class HumanCorePlugin(Star):
                 await asyncio.to_thread(self.db.init)
             except Exception as exc:
                 logger.error("[amo] 数据库初始化失败: %s" % exc)
-            self._migrate_delay_default()
             self._migrate_proactive_timing()
             self._migrate_typing_defaults()
             self._migrate_memory_source_default()
@@ -6685,15 +6677,11 @@ class HumanCorePlugin(Star):
                 changes["typing_per_char_ms"] = 400
             if to_int(self.cfg("typing_max_ms", 0), 0) == 4500:
                 changes["typing_max_ms"] = 20000
-            if abs(to_float(self.cfg("seg_per_char_delay_seconds", 0), 0) - 0.08) < 0.0001:
-                changes["seg_per_char_delay_seconds"] = 0.4
             for key, value in changes.items():
                 self.config[key] = value
             if changes:
                 if hasattr(self.config, "save_config"):
                     self.config.save_config()
-                if self.segment_engine is not None and "seg_per_char_delay_seconds" in changes:
-                    self.segment_engine.per_char_delay_seconds = 0.4
                 logger.debug("[amo] 打字延迟默认值已迁移为 400ms/字（18字约8秒）")
             self.db.kv_set("typing_realistic_migrated", True)
         except Exception as exc:
@@ -6715,23 +6703,6 @@ class HumanCorePlugin(Star):
             self.db.kv_set("proactive_timing_migrated", True)
         except Exception:
             pass
-
-    def _migrate_delay_default(self):
-        """2.4.7 起默认按回复字数动态延迟；旧的 fixed 配置迁移一次。"""
-        try:
-            if self.cfg_str("seg_delay_type", "").strip().lower() != "fixed":
-                return
-            if self.db.kv_get("delay_dynamic_migrated", False):
-                return
-            self.config["seg_delay_type"] = "dynamic"
-            if self.segment_engine is not None:
-                self.segment_engine.delay_type = "dynamic"
-            if hasattr(self.config, "save_config"):
-                self.config.save_config()
-            self.db.kv_set("delay_dynamic_migrated", True)
-            logger.debug("[amo] 分段延迟已从 fixed 迁移为 dynamic（按回复字数）")
-        except Exception as exc:
-            logger.debug("[amo] 迁移分段延迟失败: %s" % exc)
 
     def _migrate_memory_source_default(self):
         """旧版把 private companion 写成默认来源；2.4.4 起改成 auto，避免锁死。"""
@@ -6791,12 +6762,6 @@ class HumanCorePlugin(Star):
                 await self.heartflow.terminate()
             except Exception:
                 pass
-        if self.segment_engine is not None:
-            for task in list(getattr(self.segment_engine, "_tasks", set())):
-                try:
-                    task.cancel()
-                except Exception:
-                    pass
         for task in list(self._tasks):
             try:
                 task.cancel()
@@ -12145,69 +12110,8 @@ class HumanCorePlugin(Star):
         return reply
 
     # ---------- 发送 ----------
-    def _segment(self, text):
-        if not text:
-            return []
-        if not self.cfg_bool("seg_enable", True) or self.segment_engine is None:
-            return [text]
-        try:
-            segments = self.segment_engine.segment_text_by_rules(text)
-            return segments or [text]
-        except Exception as exc:
-            logger.debug("[amo] 分段引擎异常: %s" % exc)
-            return [text]
-
-    def typing_seconds(self, text):
-        if not self.cfg_bool("typing_simulate", True):
-            return 0.0
-        return typing_delay_ms(
-            text,
-            self.cfg_int("typing_base_ms", 600),
-            self.cfg_int("typing_per_char_ms", 55),
-            self.cfg_int("typing_max_ms", 4500),
-        ) / 1000.0
-
-    async def _typing(self, event, text):
-        seconds = self.typing_seconds(text)
-        if seconds <= 0:
-            return
-        try:
-            if event is not None and hasattr(event, "send_typing"):
-                await event.send_typing()
-        except Exception:
-            pass
-        await asyncio.sleep(seconds)
-
-    async def _segment_wait(self, event, segment, prev_segment, last_sent_at):
-        """按当前分段字数补足打字时间；已过去的时间可以抵扣，但不会低于分段间隔。"""
-        required = self.typing_seconds(segment)
-        gap = await self._gap(prev_segment, segment)
-        target = max(required, gap)
-        elapsed = max(0.0, time.monotonic() - last_sent_at) if last_sent_at else 0.0
-        wait = max(0.0, target - elapsed)
-        logger.info(
-            "[amo] 分段延迟（从上一段发送后计时） | 字数=%d | 需要=%.2fs | 已过=%.2fs | 补足=%.2fs"
-            % (len(re.sub(r"\s+", "", str(segment or ""))), target, elapsed, wait)
-        )
-        if wait > 0.01:
-            try:
-                if event is not None and hasattr(event, "send_typing"):
-                    await event.send_typing()
-            except Exception:
-                pass
-            await asyncio.sleep(wait)
-        return wait
-
-    async def _gap(self, text, next_text=""):
-        if self.segment_engine is not None and self.cfg_bool("seg_enable", True):
-            try:
-                return max(0.0, float(self.segment_engine._calculate_delay(text, next_text)))
-            except Exception:
-                pass
-        return 0.3
-
     def _remember_sent_reply(self, event, text):
-        """分段引擎没接手时（关掉分段 / 发送异常）的兜底记录。"""
+        """守护没接手时（发送异常）的兜底记录。"""
         msg_obj = getattr(event, "message_obj", None)
         if msg_obj is not None and not getattr(msg_obj, "message_id", None):
             return  # 别的插件伪造的主动消息事件，不是这一轮的正常回复
@@ -12217,7 +12121,7 @@ class HumanCorePlugin(Star):
         """把机器人自己发出去的话也写进 messages 表。
 
         这张表既是主动消息的上下文，也是「这句话回过没有」的唯一依据。
-        正常回复走的是分段引擎，以前只写 AstrBot 的会话历史，表里没有，
+        正常回复走守护发送，以前只写 AstrBot 的会话历史，表里没有，
         主动消息就会把已经答过的话当成没答过，再答一遍。
         """
         umo = str(umo or "").strip()
@@ -12282,7 +12186,7 @@ class HumanCorePlugin(Star):
             logger.debug("[amo] 记录自己的回复失败: %s" % exc)
 
     async def _send_now(self, event, text, quote_id=None):
-        """跳过分段引擎直接发一条（seg 关闭时，用来绕开 AstrBot 核心的引用/@）。"""
+        """直接发一条（守护失败时兜底，用来绕开 AstrBot 核心的引用/@）。"""
         if Comp is None or MessageChain is None:
             return False
         chain = []
@@ -12311,37 +12215,37 @@ class HumanCorePlugin(Star):
             text = leak_deflect_text()
         if not text or not umo:
             return False
-        segments = self._segment(text)
-        if not segments:
-            return False
-        last_sent_at = 0.0
-        for index, segment in enumerate(segments):
-            if index > 0:
-                await self._segment_wait(None, segment, segments[index - 1], last_sent_at)
-            elif last_sent_at == 0.0:
-                await self._segment_wait(None, segment, "", 0.0)
-            chain = []
-            if (
-                index == 0 and quote_id is not None
-                and self._quote_allowed(umo, group)
-            ):
-                try:
-                    chain.append(Comp.Reply(id=quote_id))
-                except Exception:
-                    pass
-            chain.append(Comp.Plain(segment))
+        scene = "group" if (group or "GroupMessage" in str(umo)) else "private"
+        # 主动消息也交给守护润色/分段/发送，终端不再自己拆条。
+        if _guard_deliver_reply is not None and self.cfg_bool("guard_deliver_enable", False):
             try:
-                await self.context.send_message(umo, MessageChain(chain))
+                delivered = await _guard_deliver_reply(
+                    self, text, scene, umo,
+                    quote_id=quote_id, group=(scene == "group"),
+                    timeout_ms=self.cfg_int("guard_text_timeout_ms", 2000),
+                )
             except Exception as exc:
-                logger.warning("[amo] 主动发送失败: %s" % exc)
-                if index > 0:
-                    # 前面的分段已经发出去了，返回 True，别让换边逻辑整段重发
-                    partial = "\n".join(segments[:index])
-                    self._remember_bot_message(umo, partial)
-                    self._last_reply_at[umo] = now_ts()
-                    return True
-                return False
-            last_sent_at = time.monotonic()
+                logger.debug("[amo] 主动消息交给守护失败: %s" % exc)
+                delivered = None
+            if delivered and delivered.get("sent"):
+                self._remember_bot_message(umo, text)
+                self._last_reply_at[umo] = now_ts()
+                logger.info("[amo] 主动（守护） -> %s: %s" % (umo, text[:300]))
+                return True
+        # 守护缺席/失败：整条原文直接发，宁可长一点也不能把话吞了。
+        await self._typing(None, text)
+        chain = []
+        if quote_id is not None and self._quote_allowed(umo, scene == "group"):
+            try:
+                chain.append(Comp.Reply(id=quote_id))
+            except Exception:
+                pass
+        chain.append(Comp.Plain(text))
+        try:
+            await self.context.send_message(umo, MessageChain(chain))
+        except Exception as exc:
+            logger.warning("[amo] 主动发送失败: %s" % exc)
+            return False
         self._last_reply_at[umo] = now_ts()
         logger.info("[amo] 主动 -> %s: %s" % (umo, text[:300]))
         self._remember_bot_message(umo, text)
@@ -13828,7 +13732,7 @@ class HumanCorePlugin(Star):
                         text,
                         "group" if group else "private",
                         timeout_ms=self.cfg_int("guard_text_timeout_ms", 2000),
-                        task_type=self.cfg_str("guard_text_task_type", "polish"),
+                        task_type="polish",
                     )
                     if _pieces:
                         text = "\n".join(_pieces)
@@ -13839,7 +13743,7 @@ class HumanCorePlugin(Star):
             result.chain = [Comp.Plain(text)]
 
             # 守护接管「说出去」：它润色分段并逐条发；发成了这里只补记账。
-            # 守护没装/异常/一条没发出去 → 继续走下面的本地分段引擎兜底。
+            # 守护没装/异常/一条没发出去 → 整条原文直接发兜底。
             if _guard_deliver_reply is not None and self.cfg_bool("guard_deliver_enable", False):
                 _delivered = await _guard_deliver_reply(
                     self,
@@ -13852,10 +13756,10 @@ class HumanCorePlugin(Star):
                 )
                 if _delivered and _delivered.get("sent"):
                     result.chain = []
-                    if self.segment_engine is not None:
+                    if _after_external_send is not None:
                         try:
-                            await self.segment_engine.after_external_send(
-                                event, _delivered.get("text") or text)
+                            await _after_external_send(
+                                self, event, _delivered.get("text") or text)
                         except Exception as exc:
                             logger.debug("[amo] 守护发送后记账失败: %s" % exc)
                     logger.info("[amo] 守护已发送 %d 条 -> %s: %s"
@@ -13864,29 +13768,13 @@ class HumanCorePlugin(Star):
                                    (_delivered.get("text") or text)[:300]))
                     return
 
-            # 群聊/私聊的最终发送只交给完整本地分段引擎。
-            if self.segment_engine is None or not self.cfg_bool("seg_enable", True):
-                if takeover and await self._send_now(
-                    event, text, quote_id if quote_enabled else None
-                ):
-                    result.chain = []
-                    return
-                self._remember_sent_reply(event, text)
+            # 守护没发出去 → 兜底整条原文直接发；终端不再本地分段。
+            if takeover and await self._send_now(
+                event, text, quote_id if quote_enabled else None
+            ):
+                result.chain = []
                 return
-            backup = list(result.chain)
-            try:
-                handled = await self.segment_engine.handle_segment_reply(
-                    event,
-                    quote_id=quote_id if quote_enabled else None,
-                    group=group,
-                    force=takeover,
-                )
-            except Exception as exc:
-                logger.error("[amo] 完整分段引擎异常: %s" % exc)
-                handled = False
-            if not handled:
-                result.chain = backup
-                self._remember_sent_reply(event, text)
+            self._remember_sent_reply(event, text)
             return
         except Exception as exc:
             logger.debug("[amo] 结果装饰失败: %s" % exc)
@@ -15726,7 +15614,6 @@ class HumanCorePlugin(Star):
                 "auto_active_msg": self.cfg_bool("auto_active_msg", True),
                 "enable_polish": self.cfg_bool("enable_polish", True),
                 "heartflow": self.heartflow is not None,
-                "segment_engine": self.segment_engine is not None,
                 "weather_key_set": bool(self.cfg_str("hefeng_key", "")),
                 "weather_host": self.cfg_str("weather_host", "https://devapi.qweather.com"),
                 "version": PLUGIN_VERSION,
@@ -15772,26 +15659,6 @@ class HumanCorePlugin(Star):
                 "管理：rel @人 关系｜set @人 字段 值｜memo @人 内容 [0/1/2]｜period set 日期｜"
                 "health set 状态｜regen 日程/世界观｜say 内容｜clean"
             )
-
-        if sub in ("segment", "分段"):
-            text = " ".join(args[1:]).strip()
-            delay_type = self.cfg_str("seg_delay_type", "smart")
-            if not text:
-                return (
-                    "分段测试：/amo segment 一段文字\n"
-                    "使用完整本地分段引擎：按 seg_split_symbols 的符号列表断句\n"
-                    "保留标点：" + ("是" if self.cfg_bool("seg_keep_symbol", True) else "否") +
-                    "｜成对符号保护：" + ("开" if self.cfg_bool("seg_protect_paired_symbols", True) else "关") +
-                    "｜延迟：" + delay_type +
-                    "\n配置项：seg_split_symbols / seg_min_length / seg_max_length / seg_delay_type"
-                )
-            segments = self._segment(text)
-            lines = ["分段结果（" + delay_type + "），共 " + str(len(segments)) + " 段"]
-            for index, segment in enumerate(segments, 1):
-                lines.append(str(index) + ". " + segment)
-            if not segments:
-                lines.append("（没有可发送的片段）")
-            return "\n".join(lines)
 
         if sub in ("draw", "画图"):
             engine = getattr(self, "draw", None)
@@ -16441,8 +16308,6 @@ class HumanCorePlugin(Star):
                 group = "语音"
             elif key.startswith("image_share_") or key.startswith("draw_") or key.startswith("photo_"):
                 group = "照片"
-            elif key.startswith("seg_"):
-                group = "分段"
             elif key.startswith("companion_") or key.startswith("memory_") or key in ("admin_uids",):
                 group = "记忆"
             elif key.startswith("proactive_") or key.startswith("delay_") or key.startswith("disturb_") or key in ("quiet_hours", "auto_active_msg"):
@@ -16524,20 +16389,6 @@ class HumanCorePlugin(Star):
                 self.heartflow.set_identity(self.bot_name, self.bot_aliases)
             except Exception as exc:
                 logger.error("[amo] 应用心流配置失败: %s" % exc)
-        if SegmentEngine is not None:
-            old = self.segment_engine
-            if old is not None:
-                for task in list(getattr(old, "_tasks", set())):
-                    try:
-                        task.cancel()
-                    except Exception:
-                        pass
-            try:
-                seg_config = self._seg_config()
-                seg_config.setdefault("protect_paired_symbols", True)
-                self.segment_engine = SegmentEngine(self.context, seg_config, plugin=self)
-            except Exception as exc:
-                logger.error("[amo] 应用分段配置失败: %s" % exc)
 
     # ---- 中文城市名 → LocationID（离线表，见 amo_city_index.py） ----
     def _city_module(self):

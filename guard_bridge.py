@@ -10,9 +10,8 @@
 2. 结构化块（``[Body: ...]`` 标签、事件 JSON）放进 ``protected_blocks`` 原样透传；
 3. 最多等 ``timeout_ms``（默认 2 秒），超过就放行原文。
 
-断句/分片默认不在终端这一层做（``task_type="polish"``）：终端本来就有
-``segment_engine`` 负责「怎么发」。想试守护的分片，把 ``guard_text_task_type``
-改成 ``format``、同时关掉 ``seg_enable``，再观察。
+9.7.0 起终端不再自带分段引擎：发送一律走 ``deliver(task_type="format")``，
+由守护完成润色、断句、分片与逐条发送；守护缺席时终端整条直发兜底。
 """
 
 from __future__ import annotations
@@ -114,7 +113,7 @@ async def deliver_reply(plugin, text, scene="private", umo="", *, quote_id=None,
     """把「要说什么」交给守护，由它分段并发出去。
 
     返回守护的结果 dict；守护没装 / 没有 deliver 能力 / 调用异常 → 返回 None，
-    终端据此退回老的分段引擎（宁可它自己发，也不能把话吞了）。
+    终端据此整条原文直发兜底（宁可长一点，也不能把话吞了）。
     """
     text = str(text or "")
     umo = str(umo or "")

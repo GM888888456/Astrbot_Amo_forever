@@ -15,47 +15,12 @@ import astrbot_stub  # noqa: E402
 
 astrbot_stub.install()
 
-from segment_engine import SegmentEngine  # noqa: E402
 from heartflow_engine import (  # noqa: E402
     _extract_weights_from_rules,
     _validate_config,
     clamp_score,
 )
 from relation_graph import spread_scores  # noqa: E402
-
-
-class SegmentRegressionTests(unittest.TestCase):
-    def _engine(self, **cfg):
-        base = {
-            "min_length": 5,
-            "max_length": 10,
-            "allow_exceed_max": False,
-            "keep_symbol": True,
-            "split_symbols": ["\n", "。", "，"],
-            "hard_max_limit": 30,
-        }
-        base.update(cfg)
-        return SegmentEngine(context=None, config=base, plugin=None)
-
-    def test_zero_max_length_does_not_hang(self):
-        """seg_max_length 填 0：以前 while remaining 永不前进，进程级卡死。"""
-        engine = self._engine(max_length=0, min_length=0, hard_max_limit=0)
-        self.assertGreaterEqual(engine.max_length, 1)
-        segments = engine._segment_by_length("一二三四五六七八九十" * 3)
-        self.assertTrue(segments)
-        self.assertEqual("".join(segments).replace(" ", ""), "一二三四五六七八九十" * 3)
-
-    def test_negative_max_length_does_not_hang(self):
-        engine = self._engine(max_length=-5, min_length=-1)
-        segments = engine._segment_by_length("今天天气不错我们出去走走吧")
-        self.assertTrue(segments)
-
-    def test_split_prefers_later_symbol(self):
-        """换行在前、句号在后时应切在句号，而不是更早的换行。"""
-        engine = self._engine(min_length=3, max_length=40)
-        text = "第一行\n第二行说完了一句话。后面还有一点"
-        index, length = engine._rfind_symbol(text, 0, len(text), [])
-        self.assertEqual(text[index:index + length], "。")
 
 
 class HeartflowRegressionTests(unittest.TestCase):

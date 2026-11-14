@@ -768,150 +768,6 @@
     },
     "hint": "即使用户一直连续发消息，最多等待多少秒后也必须触发回复"
   },
-  "seg_enable": {
-    "type": "bool",
-    "description": "【分段】启用本地完整分段引擎",
-    "default": true
-  },
-  "seg_force_split_symbols": {
-    "description": "【分段】绝对硬性分隔符列表",
-    "type": "list",
-    "default": [
-      "\\n\\n",
-      "\\n"
-    ],
-    "hint": "遇到列表中的符号时会直接强制分段，不受字数限制。分段后再对每段分别应用常规断句规则。"
-  },
-  "seg_min_length": {
-    "description": "【分段】单段最小字数",
-    "type": "int",
-    "default": 20,
-    "hint": "触发断句的最小字数限制。例如设为20，则在20字内尽量不断句。"
-  },
-  "seg_max_length": {
-    "description": "【分段】常规最大字数",
-    "type": "int",
-    "default": 50,
-    "hint": "单条消息的常规最大长度。程序优先在 [最小字数, 最大字数] 范围内寻找标点断句。"
-  },
-  "seg_allow_exceed_max": {
-    "description": "【分段】允许超出最大字数寻找断点",
-    "type": "bool",
-    "default": true,
-    "hint": "若开启：在 [最小, 最大] 范围内没找到标点时，会继续往后找，直到遇到第一个标点。\n若关闭：直接在最大字数处强制生硬截断或往前寻找。"
-  },
-  "seg_hard_max_limit": {
-    "description": "【分段】绝对硬性截断字数",
-    "type": "int",
-    "default": 100,
-    "hint": "配合上一项使用。如果允许超出最大字数，为防止无限长，当达到此字数时无论如何都会强制截断。建议设置为100-200。"
-  },
-  "seg_merge_short_tail": {
-    "description": "【分段】合并过短的尾部残余",
-    "type": "bool",
-    "default": true,
-    "hint": "断句到最后如果只剩下几个字（如“好的。”），单独发一段会很怪。开启此项会将其与上一段合并。"
-  },
-  "seg_short_tail_threshold": {
-    "description": "【分段】短尾合并字数阈值",
-    "type": "int",
-    "default": 8,
-    "hint": "最后一段剩余字数少于等于此值时，将触发短尾合并。"
-  },
-  "seg_split_symbols": {
-    "description": "【分段】断句符号/关键词列表(按优先级排列)",
-    "type": "list",
-    "default": [
-      "\\n\\n",
-      "\\n",
-      "。",
-      "！",
-      "？",
-      "；",
-      "……",
-      ".",
-      "!",
-      "?",
-      ";",
-      "”",
-      "、",
-      "，",
-      ","
-    ],
-    "hint": "程序会优先寻找靠前的符号进行切割。越强的停顿符（如换行、句号）建议放越前面。"
-  },
-  "seg_keep_symbol": {
-    "description": "【分段】分段是否保留标点符号",
-    "type": "bool",
-    "default": true,
-    "hint": "开启则断句后保留该标点（推荐）；关闭则断句后直接丢弃该标点。"
-  },
-  "seg_extend_to_trailing_symbols": {
-    "description": "【分段】分段符后顺延连续符号",
-    "type": "bool",
-    "default": true,
-    "hint": "开启后，命中分段符时会继续顺延至最后的连续符号（如“？……”）直到遇到文字；关闭则仅命中的分段符本身。"
-  },
-  "seg_protect_paired_symbols": {
-    "description": "【分段】成对符号内部不分段",
-    "type": "bool",
-    "default": true,
-    "hint": "开启后，括号/书名号/引号等配对符号内部不进行常规分段（如（...）、《...》、“...”）；到闭合符号后再允许断句。"
-  },
-  "seg_exclude_keywords": {
-    "description": "【分段】无需分段的关键词列表",
-    "type": "list",
-    "default": [
-      "模型列表",
-      "帮助",
-      "help",
-      "指令列表",
-      "菜单",
-      "功能列表",
-      "已加载的插件"
-    ],
-    "hint": "包含以下关键词时，将跳过整段处理（不区分大小写）。"
-  },
-  "seg_skip_longer_than": {
-    "description": "【分段】超长跳过阈值（字数），0=禁用",
-    "type": "int",
-    "default": 0,
-    "hint": "当 LLM 回复总字数超过此值时，直接原样发送不分段。设为 0 则禁用此功能。适合代码块等不适合拆分的场景。建议值：200-300。"
-  },
-  "seg_delay_type": {
-    "description": "【分段】延迟类型",
-    "type": "string",
-    "default": "dynamic",
-    "hint": "dynamic=按当前回复分段字数动态计算（推荐）；smart=动态+标点/问号修正；per_char=按字数；random=区间随机；fixed=旧的固定间隔。",
-    "options": [
-      "dynamic",
-      "smart",
-      "per_char",
-      "random",
-      "fixed"
-    ]
-  },
-  "seg_fixed_delay_seconds": {
-    "description": "【分段】固定延迟秒数",
-    "type": "float",
-    "default": 1,
-    "hint": "仅在 delay_type=fixed 时生效。每条分段发送前固定等待该秒数。"
-  },
-  "seg_random_delay_range": {
-    "description": "【分段】随机延迟时间范围（秒）",
-    "type": "list",
-    "default": [
-      1,
-      3
-    ],
-    "hint": "仅在 delay_type=random 时生效。格式为 [最小值, 最大值]，随机方式为正态分布并限制在区间内。"
-  },
-  "seg_per_char_delay_seconds": {
-    "description": "【分段】动态延迟每字秒数",
-    "type": "float",
-    "default": 0.4,
-    "hint": "dynamic / per_char 模式使用：延迟≈该值×当前分段字数。默认 0.4 秒/字；18 字约 7.2 秒。"
-  },
   "disturb_reply_enabled": {
     "type": "bool",
     "description": "被打扰时强制回复",
@@ -1538,13 +1394,7 @@
     "type": "bool",
     "description": "回复过守护后处理",
     "default": false,
-    "hint": "打开后，回复在发送前交给 Astrbot_Amo_Guard 做润色/去重/表情裁剪。守护没装、超时或报错时自动用原文。"
-  },
-  "guard_text_task_type": {
-    "type": "string",
-    "description": "守护加工类型",
-    "default": "polish",
-    "hint": "polish 只润色不拆条（分段仍由本地分段引擎负责）；format 会连断句一起做，需要同时关掉 seg_enable 才不会拆两遍。"
+    "hint": "打开后，且未开「守护接管发送」时，回复在发送前交给守护做润色/去重/表情裁剪；守护没装、超时或报错时用原文。"
   },
   "guard_text_timeout_ms": {
     "type": "int",
@@ -1556,7 +1406,7 @@
     "type": "bool",
     "description": "守护接管发送",
     "default": false,
-    "hint": "打开后：终端只决定说什么，润色、分段、逐条发送都交给 Astrbot_Amo_Guard；守护异常时自动退回本地分段引擎。"
+    "hint": "打开后：终端只决定说什么，润色、分段、逐条发送都交给 Astrbot_Amo_Guard；守护异常时整条原文直发兜底。"
   },
   "instinct_mode": {
     "type": "bool",

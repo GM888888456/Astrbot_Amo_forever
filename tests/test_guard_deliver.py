@@ -14,7 +14,7 @@ import astrbot_stub  # noqa: E402
 astrbot_stub.install()
 
 import guard_bridge  # noqa: E402
-from segment_engine import SegmentEngine  # noqa: E402
+import send_bookkeeping as SB  # noqa: E402
 
 
 class FakeGuard:
@@ -94,32 +94,46 @@ def test_deliver_needs_text_and_umo():
 
 
 def test_after_external_send_records():
-    seg = SegmentEngine.__new__(SegmentEngine)
     calls = []
 
     async def fake_typing(event, flag):
         calls.append(("typing", flag))
 
-    async def fake_history(event, text):
+    async def fake_history(context, event, text):
         calls.append(("history", text))
 
-    seg._set_typing = fake_typing
-    seg._save_to_conversation_history = fake_history
-    seg._remember_bot_text = lambda event, text: calls.append(("remember", text))
-    seg._notify_heartflow = lambda event, text="": calls.append(("heartflow", text))
-    seg.plugin = types.SimpleNamespace(_last_reply_at={})
+    def fake_notify(plugin, event, text=""):
+        calls.append(("heartflow", text))
 
-    event = types.SimpleNamespace(unified_msg_origin="umo-1")
-    _run(seg.after_external_send(event, "你好"))
-    assert ("remember", "你好") in calls
-    assert ("heartflow", "你好") in calls
-    assert ("history", "你好") in calls
-    assert seg.plugin._last_reply_at["umo-1"] > 0
+    old = (SB.set_typing, SB.save_to_conversation_history, SB.notify_heartflow)
+    SB.set_typing, SB.save_to_conversation_history, SB.notify_heartflow = fake_typing, fake_history, fake_notify
+    try:
+        plugin = types.SimpleNamespace(
+            context=None,
+            _last_reply_at={},
+            _remember_bot_message=lambda umo, text: calls.append(("remember", text)),
+        )
+        event = types.SimpleNamespace(unified_msg_origin="umo-1")
+        _run(SB.after_external_send(plugin, event, "你好"))
+        assert ("remember", "你好") in calls
+        assert ("heartflow", "你好") in calls
+        assert ("history", "你好") in calls
+        assert plugin._last_reply_at["umo-1"] > 0
+    finally:
+        SB.set_typing, SB.save_to_conversation_history, SB.notify_heartflow = old
 
 
 def test_after_external_send_skips_blank():
-    seg = SegmentEngine.__new__(SegmentEngine)
     calls = []
-    seg._set_typing = lambda event, flag: calls.append("typing")
-    _run(seg.after_external_send(types.SimpleNamespace(unified_msg_origin="u"), "  "))
-    assert calls == []
+
+    async def fake_typing(event, flag):
+        calls.append("typing")
+
+    old = SB.set_typing
+    SB.set_typing = fake_typing
+    try:
+        plugin = types.SimpleNamespace(context=None, _last_reply_at={})
+        _run(SB.after_external_send(plugin, types.SimpleNamespace(unified_msg_origin="u"), "  "))
+        assert calls == []
+    finally:
+        SB.set_typing = old

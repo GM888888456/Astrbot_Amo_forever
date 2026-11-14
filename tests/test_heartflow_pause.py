@@ -16,7 +16,7 @@ import astrbot_stub  # noqa: E402
 astrbot_stub.install()
 
 import heartflow_engine as HF  # noqa: E402
-import segment_engine as SE  # noqa: E402
+import send_bookkeeping as SB  # noqa: E402
 
 
 class FakeState:
@@ -66,17 +66,13 @@ class NotifierTests(unittest.TestCase):
                 calls.append((umo, text))
 
         plugin = type("P", (), {"heartflow": Flow()})()
-        engine = object.__new__(SE.SegmentEngine)
-        engine.plugin = plugin
         event = type("E", (), {"unified_msg_origin": "umo"})()
-        engine._notify_heartflow(event, "hi")
+        SB.notify_heartflow(plugin, event, "hi")
         self.assertEqual(calls, [("umo", "hi")])
 
     def test_missing_heartflow_is_noop(self):
-        engine = object.__new__(SE.SegmentEngine)
-        engine.plugin = object()
         event = type("E", (), {"unified_msg_origin": "umo"})()
-        engine._notify_heartflow(event, "hi")
+        SB.notify_heartflow(object(), event, "hi")
 
 
 if __name__ == "__main__":

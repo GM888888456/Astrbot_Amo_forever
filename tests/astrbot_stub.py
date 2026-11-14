@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""最小 astrbot 桩：让 segment_engine / heartflow_engine 能在纯单测里 import。
+"""最小 astrbot 桩：让心流引擎 能在纯单测里 import。
 
 两个引擎在模块顶层 `from astrbot.api...`，CI 上没有 AstrBot，之前这两个模块
 （以及分段死循环、0 当默认值这类 bug）完全没有测试。这里只桩住 import 需要的东西，

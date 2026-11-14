@@ -6,6 +6,14 @@
 
 > 使用手册见 [wiki/](wiki/)：安装、金融、医疗、记忆与遗忘、相片一致性、常见问题。
 
+## 9.7.0（分段引擎拆除，发送全归守护）
+
+- 删掉终端本地的 `segment_engine.py` 与全部 18 个 `seg_*` 配置键；面板「分段」入口、`/amo segment` 调试口一并移除。
+- 回复和主动消息统一走守护 `deliver(task_type="format")`：润色、断句、分片、逐条发送都在守护，终端只决定「说什么」。
+- 守护缺席、超时或一条没发出去时，终端整条原文直发兜底——宁可长一点，也不再把话吞了。
+- 新增 `send_bookkeeping.py`：守护发完后补「关打字、写会话历史、写消息表、解除心流暂停」四件事。
+- 全量测试 900 条通过。
+
 ## 9.6.0（基线可配 + 清掉一个死键）
 
 - 基线规则暴露成配置：`baseline_private_money`、`baseline_group_money`、`baseline_group_complain`、`approve_threshold`、`defer_group_money`、`label_stale_seconds`、`label_drop_seconds`。群聊想放开买东西，关掉 `defer_group_money` 或调高权重即可，不用改代码。
