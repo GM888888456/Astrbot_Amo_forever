@@ -531,7 +531,7 @@ except Exception:
             return list(rows or [])
 
 PLUGIN_NAME = "Astrbot_Amo_forever"
-PLUGIN_VERSION = "9.3.8"
+PLUGIN_VERSION = "9.3.9"
 
 
 _VOICE_TAG_OPEN_RE = re.compile(r"<(?:astrbot_speak|amo_speak)\b([^>]*)>", re.I)
@@ -8980,10 +8980,10 @@ class HumanCorePlugin(Star):
         return ("\n" + "\n".join(texts)) if texts else ""
 
     async def _maybe_auto_meal(self) -> None:
-        """饿/渴到极点还没吃：终端替她吃一口，别让她一直饿着。
+        """饿/渴到极点还没动：终端替她吃一口、喝一口，别让她一直饿着。
 
-        只兜底、不替她挑口味：先喝水，再点最便宜的一份现成饭菜；3 小时最多一次。
-        吃完写 last_meal，下一轮她自己会说「刚吃了」，不会显得像没吃过。
+        吃和喝分开算：喝水不能顶替吃饭，也不能把「刚吃过」写成「喝了水」。
+        各自 2 小时最多一次；只兜底，口味仍归她自己挑。
         """
         vitals = self._vitals()
         if not vitals or not vitals.get("enabled", True):
@@ -8993,58 +8993,74 @@ class HumanCorePlugin(Star):
             hydration = float(vitals.get("hydration") or 0)
         except (TypeError, ValueError):
             return
-        if satiety >= 5 and hydration >= 5:
-            return
+
+        def _stamp(key):
+            try:
+                return float(self.db.kv_get(key, 0) or 0)
+            except Exception:
+                return 0.0
+
         now = now_ts()
-        try:
-            last = float(self.db.kv_get("auto_meal_ts", 0) or 0)
-        except Exception:
-            last = 0.0
-        if last and now - last < 3 * 3600:
+        need_food = satiety < 20 and (now - _stamp("auto_food_ts")) > 2 * 3600
+        need_drink = hydration < 25 and (now - _stamp("auto_drink_ts")) > 2 * 3600
+        if not (need_food or need_drink):
             return
         plugin = self._finance()
         propose = getattr(plugin, "food_propose", None) if plugin is not None else None
         if not callable(propose):
             return
-        plan = []
-        if hydration < 30:
-            plan.append(("水", "drink"))
-        cheapest = ""
-        quote = getattr(plugin, "food_quote", None)
-        if callable(quote):
+
+        if need_food:
+            cheapest = ""
+            quote = getattr(plugin, "food_quote", None)
+            if callable(quote):
+                try:
+                    rows = sorted((quote() or {}).get("ready") or [],
+                                  key=lambda row: float(row.get("price") or 0))
+                except Exception:
+                    rows = []
+                if rows:
+                    cheapest = str(rows[0].get("name") or "")
+            for dish in ([cheapest] if cheapest else []) + ["面"]:
+                try:
+                    result = propose(dish, "order") or {}
+                except Exception as exc:
+                    logger.debug("[amo] 自动吃饭失败: %s" % exc)
+                    continue
+                if not result.get("ok"):
+                    logger.info("[amo] 自动吃饭没成：%s %s" % (
+                        result.get("code") or "?", result.get("reason") or ""))
+                    continue
+                try:
+                    self.db.kv_set("auto_food_ts", now)
+                    self.db.kv_set("last_meal", {"ts": now, "dish": dish,
+                                                 "method": "auto", "auto": True})
+                except Exception:
+                    pass
+                try:
+                    self.feel(FeelEvent.MEAL)
+                except Exception:
+                    pass
+                self._sync_hunger_from_vitals()
+                logger.info("[amo] 饿到极点，自动吃了：%s" % dish)
+                break
+
+        if need_drink:
             try:
-                rows = sorted((quote() or {}).get("ready") or [],
-                              key=lambda row: float(row.get("price") or 0))
-            except Exception:
-                rows = []
-            if rows:
-                cheapest = str(rows[0].get("name") or "")
-        if cheapest:
-            plan.append((cheapest, "order"))
-        for dish, method in plan:
-            try:
-                result = propose(dish, method) or {}
+                result = propose("水", "drink") or {}
             except Exception as exc:
-                logger.debug("[amo] 自动吃饭失败: %s" % exc)
-                continue
-            if not result.get("ok"):
-                logger.info("[amo] 自动吃饭没成：%s %s" % (
+                logger.debug("[amo] 自动喝水失败: %s" % exc)
+                result = {}
+            if result.get("ok"):
+                try:
+                    self.db.kv_set("auto_drink_ts", now)
+                except Exception:
+                    pass
+                self._sync_hunger_from_vitals()
+                logger.info("[amo] 渴到极点，自动喝了：水")
+            elif result:
+                logger.info("[amo] 自动喝水没成：%s %s" % (
                     result.get("code") or "?", result.get("reason") or ""))
-                continue
-            try:
-                self.db.kv_set("auto_meal_ts", now)
-                self.db.kv_set("last_meal", {"ts": now, "dish": dish,
-                                             "method": "auto", "auto": True})
-            except Exception:
-                pass
-            try:
-                self.feel(FeelEvent.MEAL)
-            except Exception:
-                pass
-            self._sync_hunger_from_vitals()
-            logger.info("[amo] 饿/渴到极点，自动%s：%s" % (
-                "喝了" if method == "drink" else "吃了", dish))
-            break
 
     async def _maybe_hunger_sick(self) -> None:
         """饿到极限 → 给医疗插件一个信号，让她有机会真的病一场。
